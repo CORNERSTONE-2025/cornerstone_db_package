@@ -35,13 +35,12 @@ A practical example demonstrating how to use the Cornerstone package:
 ## Key Features
 
 - **Custom ML Models** (`cornerstone/ml/models/`)
-  - Transformer-based: `transformer.py`, `ts_transformer_DP.py`, `transformer_with_attention.py`
-  - Ensemble & RNN: `lstm_baseline.py`, `oneFitsAll_DP.py`
-  - PatchTST: `patchTST_DP.py`
-  - Traditional ML: `XGBoost_DP.py`
-  - Time series feature extraction: `embed_DP.py`
-  - Rocket-based: `rocket_DP.py`, `rocket_baseline_pytorch_DP.py`, `miniRocket_DP.py`
-  - InceptionTime: `inceptionTime_baseline_DP.py`
+  - Transformer variants: `transformer.py`, `ts_transformer_DP.py`, `transformer_with_attention.py`
+  - Time series specific: `patchTST_DP.py`, `lstm_baseline.py`
+  - Rocket family (scikit-learn based): `rocket_DP.py`, `rocket_baseline_pytorch_DP.py`, `miniRocket_DP.py`
+  - Traditional ML: `XGBoost_DP.py`, `oneFitsAll_DP.py`
+  - CNN: `inceptionTime_baseline_DP.py`
+  - Representation learning: `embed_DP.py`
   - Time Series Library wrapper: `time_series_library_with_mask.py`
 
 - **Comprehensive Time Series Library** (`cornerstone/ml/Time_Series_Library/`)
