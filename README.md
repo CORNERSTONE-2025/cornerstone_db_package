@@ -34,15 +34,24 @@ A practical example demonstrating how to use the Cornerstone package:
 
 ## Key Features
 
-- **Multiple Model Architectures**
-  - Transformer-based models (Autoformer, Informer, PatchTST)
-  - Traditional ML (XGBoost, scikit-learn)
-  - RNN/LSTM baselines
-  - State-of-the-art time series models (TimesNet, DLinear, Mamba)
+- **Custom ML Models** (`cornerstone/ml/models/`)
+  - Transformer-based: `transformer.py`, `ts_transformer_DP.py`, `transformer_with_attention.py`
+  - Ensemble & RNN: `lstm_baseline.py`, `oneFitsAll_DP.py`
+  - PatchTST: `patchTST_DP.py`
+  - Traditional ML: `XGBoost_DP.py`
+  - Time series feature extraction: `embed_DP.py`
+  - Rocket-based: `rocket_DP.py`, `rocket_baseline_pytorch_DP.py`, `miniRocket_DP.py`
+  - InceptionTime: `inceptionTime_baseline_DP.py`
+  - Time Series Library wrapper: `time_series_library_with_mask.py`
 
-- **Comprehensive Time Series Library**
-  - 30+ forecasting and classification models
-  - Support for multiple prediction tasks
+- **Comprehensive Time Series Library** (`cornerstone/ml/Time_Series_Library/`)
+  - 32 state-of-the-art models:
+    - Transformers: Autoformer, Informer, Transformer, Nonstationary_Transformer, iTransformer
+    - Attention-based: Crossformer, Pyraformer, Reformer, ETSformer, FEDformer, FiLM
+    - Linear & Hybrid: DLinear, TSMixer, TimesNet, TimeMixer, TimeXer, LightTS, TiDE
+    - Advanced architectures: PatchTST, Koopa, KANAD, MICN, SegRNN, WPMixer, MultiPatchFormer, Mamba, MambaSimple
+    - Specialized: Temporal Fusion Transformer, SCINet, FreTS, PAttn
+  - Multiple prediction tasks (forecasting, classification, anomaly detection, imputation)
   - Modular architecture for easy extension
 
 - **Data Pipeline**
