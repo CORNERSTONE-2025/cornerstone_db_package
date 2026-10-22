@@ -425,7 +425,7 @@ def run_cv_training(model_name   , window_map, base_path="", output_config=None,
             pt_generate_plots(summary_metrics, output_config, path_manager, task_config)
         return summary_metrics
     elif model_name in SK_MODELS: 
-        summary_metrics = run_cv_training_sk(window_map, base_path, save_models, n_folds,  model_fn, metrics_file, data_prefix, model_name = model_name, path_manager=path_manager, clearml_task = clearml_task , regularization_params = regularization_params)
+        summary_metrics = run_cv_training_sk(window_map, base_path, save_models, n_folds,  model_fn, metrics_file, data_prefix, model_name = model_name, path_manager=path_manager, clearml_task = clearml_task , regularization_params = regularization_params, threshold_config = threshold_config)
         # Save metrics and plots 
         metrics_manager.save_metrics(summary_metrics, metrics_file)
         print(f"Training completed — results saved to: {path_manager.get_results_structure()}")
@@ -456,7 +456,7 @@ def HSS(y_true, y_pred):
         return 0.0
     return numerator / denominator
                 
-def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None, model_fn=None,metrics_file="./metrics/summary_metrics.json", data_prefix="M+_flare", model_name = None,path_manager = None , clearml_task=None, regularization_params = None ):
+def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None, model_fn=None,metrics_file="./metrics/summary_metrics.json", data_prefix="M+_flare", model_name = None,path_manager = None , clearml_task=None, regularization_params = None, threshold_config = None ):
     import os, joblib, json
     import cupy as cp
     from sklearn.metrics import f1_score
@@ -520,9 +520,32 @@ def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None,
                 #y_val_proba = model.predict_proba(X_val, mask=mask_val)[:,1]
                 #y_val_pred = (y_val_proba >= 0.5).astype(int)
                 
-                y_train_pred = model.predict(X_train, mask = mask_train)
                 y_train_proba = model.predict_proba(X_train, mask = mask_train)
                 p_pos = y_train_proba[:, 1]
+
+                # Decision threshold optimized on validation, as in run_cv_training_pt (0.5 if disabled)
+                p_val = model.predict_proba(X_val, mask = mask_val)[:, 1]
+                if threshold_config and threshold_config.get("enabled", False):
+                    thr_opt = create_threshold_optimizer(
+                        n_thresholds=threshold_config.get("n_thresholds", 200),
+                        threshold_range=tuple(threshold_config.get("threshold_range", [0.0, 1.0]))
+                    )
+                    thr_metric = threshold_config.get("metric", "TSS")
+                    thr_kwargs = {}
+                    if thr_metric == "precision_at_recall":
+                        thr_kwargs["min_recall"] = threshold_config.get("min_recall", 0.8)
+                    elif thr_metric == "f1_at_precision":
+                        thr_kwargs["min_precision"] = threshold_config.get("min_precision", 0.8)
+
+                    thr_res = thr_opt.optimize_threshold(y_val, p_val, metric=thr_metric, **thr_kwargs)
+                    tau_star = float(thr_res["optimal_threshold"])
+                    print(f"🎯 Optimal threshold on val: {tau_star:.4f} (metric: {thr_res['optimal_metric_value']:.4f})")
+                else:
+                    tau_star = 0.5
+                # Stored in the model so that run_test applies the same threshold
+                model.threshold_ = tau_star
+
+                y_train_pred = (p_pos >= tau_star).astype(int)
                 
                 
                 eps = 1e-10
@@ -552,15 +575,13 @@ def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None,
                 print("Number of 1s:", counts[1])
                 '''
                 
-                y_val_pred = model.predict(X_val, mask = mask_val)
+                y_val_pred = (p_val >= tau_star).astype(int)
                 # Compute metrics
                 #auc_val = roc_auc_score(y_val, y_val_proba)
                 #loss_val = log_loss(y_val, y_val_proba) 
                 tss_val, cm_val = compute_tss(y_val, y_val_pred)
                 #print(f"Fold val {fold} -> TSS: {tss_val:.4f}, Confusion: {cm_val}")
 
-                y_val_proba = model.predict_proba(X_val, mask = mask_val)
-                p_val = y_val_proba[:, 1]
                 
                 
                 eps = 1e-10
@@ -609,7 +630,8 @@ def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None,
                 X_test = test_dataset.X.numpy()
                 y_test = test_dataset.Y.numpy().astype(int) 
                 mask_test = test_dataset.mask.numpy()
-                y_test_pred = model.predict(X_test, mask = mask_test)
+                p_test = model.predict_proba(X_test, mask = mask_test)[:, 1]
+                y_test_pred = (p_test >= tau_star).astype(int)
                 
                 
                 F1_test= f1_score(y_test, y_test_pred)
@@ -618,8 +640,6 @@ def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None,
                 HSS_test = HSS(y_test, y_test_pred)
                 tss_test, cm_test = compute_tss(y_test, y_test_pred)
                 
-                y_test_proba = model.predict_proba(X_test, mask = mask_test)
-                p_test = y_test_proba[:, 1]
                 test_loss = -np.mean(y_test * np.log(p_test) + (1 - y_test) * np.log(1 - p_test))
                
                 metrics_test['TSS'] = tss_test
@@ -658,8 +678,9 @@ def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None,
                 fold_metrics.append({
                     "fold": fold,  
                     "val_metrics": fold_metrics_val,
-                    "test_metrics": fold_metrics_test
-                }) 
+                    "test_metrics": fold_metrics_test,
+                    "threshold": tau_star
+                })
 
                 fold_models_by_C.setdefault(C, []).append(model)
 
@@ -1523,12 +1544,15 @@ def run_test(
             X_test = test_dataset.X.numpy()
             y_test = test_dataset.Y.numpy().astype(int) 
             mask_test = test_dataset.mask.numpy()
-            y_pred = model.predict(X_test, mask = mask_test)
-            
-            
+            # Threshold optimized on validation during training (0.5 for models saved before it existed)
+            tau_sk = float(getattr(model, "threshold_", 0.5))
+            y_pred = (model.predict_proba(X_test, mask = mask_test)[:, 1] >= tau_sk).astype(int)
+
+
             from .metrics import compute_metrics
             test_metrics = compute_metrics(y_test, y_pred)
-            
+            test_metrics["tau_star"] = tau_sk
+
 
             print("📊 Test metrics:")
             for k, v in test_metrics.items():
