@@ -472,8 +472,10 @@ def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None,
     
     for label, steps in window_map.items():
         results = []
+        # Fitted models per C, kept in memory: only those of the selected C are saved
+        fold_models_by_C = {}
         print(f"\nRunning CV for window: {label} ({steps} timesteps)")
-        
+
         for C in Cs:
             fold_metrics = []  
             c_step = 0 
@@ -659,11 +661,8 @@ def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None,
                     "test_metrics": fold_metrics_test
                 }) 
 
-                if save_models and path_manager:
-                    model_path = path_manager.get_model_path(label, fold, model_type = "SK") 
-                    print(f"Saving model to: {model_path}")
-                    joblib.dump(model, model_path) 
-             
+                fold_models_by_C.setdefault(C, []).append(model)
+
             
             
                 # ------------------------------
@@ -766,7 +765,7 @@ def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None,
         # Extract all C values
         all_Cs = sorted(set(entry["C"] for entry in results))
 
-        # Compute mean metrics per C using test metrics (you can switch to val_metrics if desired)
+        # Mean test metrics per C: reported only, never used to select C
         mean_TSS = {
             C: np.mean([
                 fold["test_metrics"]["TSS"]
@@ -812,19 +811,44 @@ def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None,
             for C in all_Cs
         }
 
-        # Select best C by mean TSS
-        best_C = max(mean_TSS, key=mean_TSS.get)
+        # Mean validation TSS per C: used to select C, so the test set stays untouched
+        mean_val_TSS = {
+            C: np.mean([
+                fold["val_metrics"]["TSS"]
+                for entry in results if entry["C"] == C
+                for fold in entry["folds"]
+            ])
+            for C in all_Cs
+        }
+
+        # Select best C by mean validation TSS
+        best_C = max(mean_val_TSS, key=mean_val_TSS.get)
+
+        # Best fold of the selected C (by validation TSS): saved as the "_best" model used by run_test
+        best_C_folds = next(entry["folds"] for entry in results if entry["C"] == best_C)
+        best_fold = int(np.argmax([fold["val_metrics"]["TSS"] for fold in best_C_folds]))
 
         print("\n=== CV Summary ===")
         for C in all_Cs:
             print(f"C={C:>8}: "
+                f"mean val TSS={mean_val_TSS[C]:.4f} | test: "
                 f"mean TSS={mean_TSS[C]:.4f}, "
                 f"mean HSS={mean_HSS[C]:.4f}, "
                 f"mean F1={mean_F1[C]:.4f}, "
                 f"mean AUC={mean_AUC[C]:.4f}, "
                 f"mean MCC={mean_MCC[C]:.4f}")
 
-        print(f"\nBest C by mean TSS: {best_C}")
+        print(f"\nBest C by mean validation TSS: {best_C} (best fold: {best_fold})")
+
+        if save_models and path_manager:
+            for fold, model in enumerate(fold_models_by_C[best_C]):
+                model_path = path_manager.get_model_path(label, fold, model_type = "SK")
+                print(f"Saving model (C={best_C}) to: {model_path}")
+                joblib.dump(model, model_path)
+            best_model_path = path_manager.get_model_path(label, best = True, model_type = "SK")
+            print(f"Saving best model (C={best_C}, fold {best_fold}) to: {best_model_path}")
+            joblib.dump(fold_models_by_C[best_C][best_fold], best_model_path)
+        fold_models_by_C.clear()
 
         '''all_Cs = sorted(set(r["C"] for r in results))
         mean_TSS = {C: np.mean([r["TSS"] for r in results if r["C"] == C]) for C in all_Cs}
@@ -857,13 +881,14 @@ def run_cv_training_sk(window_map, base_path="", save_models=True, n_folds=None,
             for C in all_Cs:
                 f.write(
                     f"C={C:>8}: "
+                    f"mean val TSS={mean_val_TSS[C]:.4f} | test: "
                     f"mean TSS={mean_TSS[C]:.4f}, "
                     f"mean HSS={mean_HSS[C]:.4f}, "
                     f"mean F1={mean_F1[C]:.4f}, "
                     f"mean AUC={mean_AUC[C]:.4f}, "
                     f"mean MCC={mean_MCC[C]:.4f}\n"
                 )
-            f.write(f"\nBest C by mean TSS: {best_C}\n")
+            f.write(f"\nBest C by mean validation TSS: {best_C} (best fold: {best_fold})\n")
             
 
 
