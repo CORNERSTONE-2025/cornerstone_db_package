@@ -38,7 +38,7 @@ def plot_boxplot(summary_metrics, metric_name="TSS", save_path=None):
         if fold_metrics:
             data.append(fold_metrics)
             # Use descriptive window name if available
-            window_desc = DATA_CONFIG["window_descriptions"].get(window, window)
+            window_desc = DATA_CONFIG().get("window_descriptions", {}).get(window, window)
             labels.append(window_desc)
     
     plt.boxplot(data, labels=labels)
@@ -52,93 +52,6 @@ def plot_boxplot(summary_metrics, metric_name="TSS", save_path=None):
     else:
         plt.show()
 
-
-def sk_plot_boxplot(summary_metrics,metric_name="TSS", save_path=None):
-    """
-    Plot boxplots of metrics across folds for each window.
-    
-    Args:
-        summary_metrics: Dictionary containing metrics for each window
-        metric_name: Name of the metric to plot
-        save_path: Path to save the plot
-    """
-    plt.figure(figsize=(10, 6))
-    data = []
-    data_test = []
-    labels = []
-    windows = [] 
- 
-        
-    
-    window = os.path.basename(jf).replace(".json", "").replace("metrics_","")
-    print(window)
-    with open(jf, "r") as f:
-        window_data = json.load(f)
-    fold_metrics = []
-    value = None
-        
-    Cs, mean_TSS, std_TSS = [], [], [] 
-    print(f)
-    best_TSS = -1
-    for entry in window_data:
-        if entry["time_window"] == window: 
-            
-            C = entry["C"]
-            print(C)
-            folds = entry["folds"]
-            value = [fold["val_metrics"][metric_name] for fold in folds]
-            value_test = [fold["test_metrics"][metric_name] for fold in folds]
-            Cs.append(C)
-            mean_TSS = np.mean(value)
-            std_TSS.append(np.std(value))
-                
-        if value is not None and mean_TSS > best_TSS:
-            fold_metrics = value
-            fold_metrics_test = value_test
-            print("best C" )
-            print(C)
-            best_TSS = mean_TSS
-            
-    print(fold_metrics) 
-    if fold_metrics:
-        data.append(fold_metrics)
-        # Use descriptive window name if available
-        window_desc = DATA_CONFIG["window_descriptions"].get(window, window)
-        windows.append(window.replace("h",""))
-        labels.append(window_desc)
-        data_test.append(fold_metrics_test)
-    
-    
-    # Zip labels and data together
-    combined = list(zip(map(int, windows), labels, data, data_test))
-
-    # Sort by label alphabetically
-    combined_sorted = sorted(combined, key=lambda x: x[0])
-
-    # Unzip back into labels and data
-    win, labels_sorted, data_sorted, data_test_sorted = zip(*combined_sorted)
-    
-    plt.boxplot(data_sorted, labels=labels_sorted)
-    plt.title(f"{metric_name} Distribution Across Folds")
-    plt.ylabel(metric_name)
-    plt.grid(True, linestyle='--', alpha=0.7)
-     
-    if save_path:
-        plt.savefig(save_path + "_validation.png")
-        plt.close() 
-     
-    
-    plt.figure(figsize=(10, 6))
-    
-    plt.boxplot(data_test_sorted, labels=labels_sorted)
-    plt.title(f"{metric_name} Distribution Across Folds")
-    plt.ylabel(metric_name)
-    plt.grid(True, linestyle='--', alpha=0.7)
-     
-    if save_path:
-        plt.savefig(save_path+ "_test.png")
-        plt.close()
-    
 
 def plot_training_curves(summary_metrics, save_path=None):
     os.makedirs("results", exist_ok=True)
@@ -155,7 +68,7 @@ def plot_training_curves(summary_metrics, save_path=None):
                 plotted = True
         if plotted:
             # Use descriptive window name if available
-            window_desc = DATA_CONFIG["window_descriptions"].get(window, window)
+            window_desc = DATA_CONFIG().get("window_descriptions", {}).get(window, window)
             plt.title(f"Training and Validation Loss - {window_desc}")
             plt.xlabel("Epoch")
             plt.ylabel("Loss")
@@ -197,7 +110,7 @@ def plot_metric_curves(summary_metrics, metric_name="TSS", save_path=None):
                 plotted = True
         if plotted:
             # Use descriptive window name if available
-            window_desc = DATA_CONFIG["window_descriptions"].get(window, window)
+            window_desc = DATA_CONFIG().get("window_descriptions", {}).get(window, window)
             plt.title(f"Validation {metric_name} over Epochs - {window_desc}")
             plt.xlabel("Epoch")
             plt.ylabel(metric_name)
@@ -257,7 +170,7 @@ def plot_test_metrics(summary_metrics, selected_metrics=["TSS", "HSS", "F1"], sa
         plt.bar(x + i * width - spacing / 2 + width / 2, data[metric], width, label=metric)
 
     # Use descriptive window names for x-axis labels
-    window_labels = [DATA_CONFIG["window_descriptions"].get(win, win) for win in windows]
+    window_labels = [DATA_CONFIG().get("window_descriptions", {}).get(win, win) for win in windows]
     plt.xticks(x, window_labels)
     plt.title("Test Set Performance Metrics")
     plt.xlabel("Time Window")
@@ -282,6 +195,10 @@ def sk_plot_boxplot(summary_metrics,model_name = "ROCKET", metric_name="TSS", sa
     """
     labels = []
     windows = []
+
+    # Strip the extension so the window/split suffix goes before it
+    save_base, ext = os.path.splitext(save_path)
+    ext = ext or ".png"
 
     for window, window_data in summary_metrics.items():
 
@@ -308,7 +225,7 @@ def sk_plot_boxplot(summary_metrics,model_name = "ROCKET", metric_name="TSS", sa
         plt.ylabel(metric_name)
         plt.grid(True, linestyle='--', alpha=0.7)
 
-        plt.savefig(f"{save_path}_{window}_validation.png")
+        plt.savefig(f"{save_base}_{window}_validation{ext}")
         plt.close()
 
         # ----- SAVE TEST BOXPLOT FOR THIS WINDOW -----
@@ -318,6 +235,6 @@ def sk_plot_boxplot(summary_metrics,model_name = "ROCKET", metric_name="TSS", sa
         plt.ylabel(metric_name)
         plt.grid(True, linestyle='--', alpha=0.7)
 
-        plt.savefig(f"{save_path}_{window}_test.png")
+        plt.savefig(f"{save_base}_{window}_test{ext}")
         plt.close()
 
