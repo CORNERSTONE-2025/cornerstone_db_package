@@ -18,13 +18,13 @@ Purpose
 Constructor
 : __init__(db_config, output_folder="./dataset_compilation/data", project_name="Cornerstone")
 
-- db_config: dict-like config for database access and metadata paths (expected keys include `local_db_path`, `local_metadata_path`, `remote_metadata_url`, and for MySQL `user`, `password`, `host`, `port`, `database`).
+- db_config: dict-like config for database access and metadata paths (expected keys include `local_db_path`, `local_metadata_path`, `remote_metadata_url`, `remote_db_url`, and for MySQL `user`, `password`, `host`, `port`, `database`). Relative paths are resolved against the package checkout (the folder that contains `cornerstone/`), not the current directory; missing keys default to `cornerstone/configs/db_config.json`, and `local_metadata_path` to `<db folder>/local_meta/local_db_metadata.json`.
 - output_folder: where generated datasets, splits and logs will be stored.
 - project_name: name used by ClearML tasks (if ClearML is available).
 
 Main methods
-- db_update():
-  - Synchronize local DB with remote metadata/dumps. Handles first-time full-dump download and incremental updates. Uses helper functions such as `_fetch_remote_metadata`, `_download_file`, `_create_local_db_from_dump`, and `_apply_update_to_local_db`.
+- db_update(keep_downloads=False):
+  - Synchronize local DB with remote metadata/dumps. Downloads the full dump when there is no local DB (or a newer full dump exists), then applies the incremental updates newer than the last sync, in date order. Needs about 6 GB of free space next to `local_db_path` for a full download (1.5 GB dump + 4.3 GB database). Raises on any failure; the sync date is saved after every applied step, so a new call resumes where it stopped. Uses helper functions such as `_fetch_remote_metadata`, `_download_file`, `_create_local_db_from_dump`, and `_apply_update_to_local_db`.
 
 - create_hdf5_from_db(label_type, data_version="clean", table_type="DEF", window_hours=24, buffer_minutes=6, sampling_interval=12, test_mode=False, test_size=500, random_seed=42, db_type="sqlite"):
   - Extract event-labelled time-series from a database, package them into consistent time windows (rounding to a sampling interval), and save to an HDF5 file.
@@ -77,7 +77,7 @@ These functions are module-level helpers used by the class methods. Most are pre
   - Wrapper around `gdown.download_folder` to download a single file and return its path.
 
 - _create_local_db_from_dump(self, dump_path: str, db_type="sqlite", db_path=None)
-  - Restore a SQL dump into SQLite or MySQL. For SQLite, the module includes streaming conversion from MySQL SQL -> SQLite-compatible SQL before import. For MySQL, it streams into the server (uses `gunzip -c` if compressed). This function is careful to avoid large memory usage but requires external tools like `sqlite3` and `mysql`/`gunzip` available on PATH.
+  - Restore a SQL dump into SQLite or MySQL. For SQLite, the MySQL dump is decompressed, converted and imported in a single stream with Python's `sqlite3` (no external tools, no temporary copies); the database is built in `<db_path>.partial` and renamed only when complete. Values are parsed by Python and bound as parameters, so numbers are stored exactly as written in the dump (some SQLite versions round decimal literals wrongly). Each `DF_..._three_classes_unified` label table is also exposed as a `DF_..._three_classes` view, the name `create_hdf5_from_db` reads. For MySQL, it streams into the server (uses `gunzip -c` if compressed) and needs `mysql`/`gunzip` on PATH.
 
 - _apply_update_to_local_db(self, db_path: str, bin_path: str)
   - Apply an incremental SQL script to the local DB using `executescript()` in SQLite. Raises helpful errors when files are missing.
@@ -99,7 +99,6 @@ Dependencies (non-exhaustive):
 - clearml (optional — only for task logging; code checks for it)
 - mysql-connector-python (if using MySQL backend)
 - gdown (for Google Drive downloads)
-- sqlite3 CLI available on PATH (used by `_create_local_db_from_dump` streaming import)
 - gunzip/mysql CLI (for streaming compressed SQL into MySQL)
 - Repository-local module `sharp_data` which provides `SharpDataset`, transforms and splitters.
 
@@ -118,8 +117,8 @@ from cornerstone.cornerstone import Cornerstone
 
 # Minimal db_config example for SQLite
 db_config = {
-    "local_db_path": "/bigdisk/daniele/cornerstone_module/db/cornerstone_full.db",
-    "local_metadata_path": "/bigdisk/daniele/cornerstone_module/db/metadata.json",
+    "local_db_path": "db/cornerstone.sqlite",   # relative to the package checkout
+    "local_metadata_path": "db/local_meta/local_db_metadata.json",
     "remote_metadata_url": "https://drive.google.com/drive/folders/..."
 }
 

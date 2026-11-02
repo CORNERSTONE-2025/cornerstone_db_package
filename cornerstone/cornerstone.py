@@ -1,3 +1,4 @@
+import ast
 import os
 import h5py
 import time
@@ -74,8 +75,9 @@ class Cornerstone:
     """
 
     def __init__(self, db_config, output_folder="./dataset_compilation/data", project_name="Cornerstone"):
-        
-        self.db_config = db_config # TO-DO METTERE DENTRO PARTE DI CONFIG (usare solo sqlite3) 
+
+        # relative paths in db_config are relative to the package checkout (see _resolve_db_config)
+        self.db_config = _resolve_db_config(db_config) # TO-DO METTERE DENTRO PARTE DI CONFIG (usare solo sqlite3)
         
         self.output_folder = output_folder # TO-DO METTERE DENTRO CLEARML
         self.rr = clearml #TO-DO METTERE COME PRIVATA O PROTETTA   # rr stands for reproducible research 
@@ -93,82 +95,27 @@ class Cornerstone:
         
         os.makedirs(self.output_folder, exist_ok=True)
  
-    def db_update(self):
+    def db_update(self, keep_downloads=False):
         """
         Checks the local database for updates and synchronizes it with the remote database.
-        
+
         Workflow:
         1. Load local metadata and fetch remote metadata.
-        2. If no local database exists, download the first full dump and create the local DB.
-        3. If remote DB has updates newer than the last sync, apply incremental updates.
-        4. Update local metadata after synchronization.
+        2. If there is no local database, or a newer full dump is available, download the full
+           dump and rebuild the local DB (`local_db_path`) from it.
+        3. Apply, in date order, the incremental updates newer than the last sync.
+        4. Update local metadata after every step, so an interrupted update resumes where it stopped.
+
+        The database is written next to `local_db_path`: downloads go to `<db folder>/downloads`
+        (deleted at the end unless keep_downloads=True), remote metadata to `<db folder>/remote_meta`.
+        Any failure raises: the local metadata is never advanced past what was really applied.
         """
         # Create a task for logging/monitoring
         task = _get_or_create_task(self, "DB Update")
-        print("🔍 Checking for database updates ...")
-
-        # Load metadata about the local DB and fetch remote metadata
-        local_meta = _load_local_metadata(self) 
-        remote_meta = _fetch_remote_metadata(self)
-
-        # Parse timestamps for full dump and latest update
-        latest_full = datetime.fromisoformat(remote_meta["latest_full"])
-        latest_update = datetime.fromisoformat(remote_meta["latest_update"])
-        
-        # -----------------------------
-        # Case 0: No local DB exists
-        # -----------------------------
-        if local_meta["last_sync"] == "":
-            print(f"🆕 Downloading first dump available from {remote_meta['latest_full']}.")
-            db_folder_url = self.db_config["remote_db_url"]  
-            
-            # Download the full database dump
-            full_path = _download_file(self, db_folder_url )       #full_path = "/bigdisk/daniele/cornerstone_module/db/cornerstone_full_2025-11-01.sql.gz"
-            
-            # Create local database from downloaded dump
-            _create_local_db_from_dump(self, full_path, db_path = local_meta["db_path"] )
-             
-            # Save metadata for the downloaded full dump
-            _save_local_metadata(self, remote_meta["latest_full"])
-            
-            # Refresh in memory metadata 
-            local_meta = _load_local_metadata(self)
-            print(f"🎉 Local database refreshed to full version {remote_meta['latest_full']}.")
-                
-        # -----------------------------
-        # Case 1: Remote DB has updates newer than local
-        # -----------------------------
-        if  latest_update > datetime.fromisoformat(local_meta["last_sync"]):
-            print(datetime.fromisoformat(local_meta["last_sync"])) 
-            
-            # Identify incremental updates newer than last sync
-            updates_to_apply = [
-                fname for fname in remote_meta["available_updates"]
-                if datetime.fromisoformat(fname.split("_")[1]) > datetime.fromisoformat(local_meta["last_sync"])
-            ] 
-            print(f"📂 Found {len(updates_to_apply)} incremental updates: {updates_to_apply}")            
-            
-            # Apply each incremental update
-            for update in updates_to_apply :
-                url = remote_meta["available_updates"][update]
-                 
-                path = _download_file(url)
-                _apply_update_to_local_db(self, local_meta["db_path"]+"/cornerstone.db" , path)
- 
-            # Save metadata after updates 
-            _save_local_metadata(self, remote_meta["latest_update"]) 
-            
-            print(f"🎉 Local database refreshed to full version {remote_meta['latest_full']}.")
-            
-        # -----------------------------
-        # Case 2: Local DB already up-to-date
-        # -----------------------------
-        else :
+        try:
+            _db_update(self, keep_downloads)
+        finally:
             task.close()
-            print("✅ Local database already up to date.")
-            return
-        task.close()
-        print(f"🎉 Database successfully updated to {remote_meta['latest_update']}.")
 
 
     def splitting_labeling(self, shtyp = "DEF", class0 = "Cplus",delta_hours="24", db_type = "sqlite", save_csv= False ):
@@ -1230,7 +1177,7 @@ class Cornerstone:
                 window_map=DATA_CONFIG()["window_map"],  
                 base_path=DATA_CONFIG()["base_path"],
                 data_prefix=TASK_CONFIG()["data_prefix"], 
-                model_checkpoint_path=None, #"/bigdisk/daniele/cornerstone_module/results/sharp_dataset_db_SHARPC_clean_NRT_direct_17features_multiwin_empty_win1-16-31-61-121_no_cmask_M+_random_20pct/M+/models/M+_minirocket_model_3h_fold4.pkl",
+                model_checkpoint_path=None,
                 clearml_task=self.tasks["Test Model"],
                 path_manager= path_manager, 
                 model_fn=lambda steps: model_manager.create_model(CURRENT_MODEL,**{**MODEL_CONFIG,
@@ -1586,20 +1533,119 @@ def _print_config_summary(self, config):
         print(f"  Time Window: {config.TEST_TIME_WINDOW}")
     print()
     
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DB_CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "db_config.json"
+
+
+def _resolve_db_config(db_config):
+    """
+    Return a copy of db_config with absolute paths and the defaults filled in:
+    - relative `local_db_path` / `local_metadata_path` are relative to the package checkout
+      (PACKAGE_ROOT), not to the current working directory;
+    - `local_metadata_path` defaults to `<db folder>/local_meta/local_db_metadata.json`;
+    - the remote URLs default to the ones in cornerstone/configs/db_config.json.
+    """
+    cfg = dict(db_config or {})
+    defaults = {}
+    if DEFAULT_DB_CONFIG_PATH.exists():
+        with open(DEFAULT_DB_CONFIG_PATH, "r") as f:
+            defaults = json.load(f)
+    for key in ("remote_metadata_url", "remote_db_url", "local_db_path"):
+        if not cfg.get(key) and defaults.get(key):
+            cfg[key] = defaults[key]
+    for key in ("local_db_path", "local_metadata_path"):
+        if cfg.get(key):
+            cfg[key] = str((PACKAGE_ROOT / os.path.expanduser(cfg[key])).resolve())
+    if cfg.get("local_db_path") and not cfg.get("local_metadata_path"):
+        cfg["local_metadata_path"] = os.path.join(os.path.dirname(cfg["local_db_path"]),
+                                                  "local_meta", "local_db_metadata.json")
+    return cfg
+
+
+def _db_update(self, keep_downloads=False):
+    """Body of Cornerstone.db_update (see its docstring)."""
+    db_path = self.db_config.get("local_db_path")
+    if not db_path:
+        raise RuntimeError("❌ 'local_db_path' not set in db_config.")
+    db_dir = os.path.dirname(db_path)
+    downloads = os.path.join(db_dir, "downloads")
+    os.makedirs(db_dir, exist_ok=True)
+
+    print("🔍 Checking for database updates ...", flush=True)
+    print(f"📁 Local database: {db_path}", flush=True)
+
+    # Load metadata about the local DB and fetch remote metadata
+    local_meta = _load_local_metadata(self)
+    remote_meta = _fetch_remote_metadata(self, output_folder=os.path.join(db_dir, "remote_meta"))
+
+    latest_full = datetime.fromisoformat(remote_meta["latest_full"])
+    latest_update = datetime.fromisoformat(remote_meta["latest_update"])
+    last_sync = datetime.fromisoformat(local_meta["last_sync"]) if local_meta["last_sync"] else None
+
+    # -----------------------------
+    # Case 0: no local DB, or a newer full dump than the last sync
+    # -----------------------------
+    if last_sync is None or last_sync < latest_full:
+        reason = "no local database" if last_sync is None else f"last sync {local_meta['last_sync']} is older"
+        print(f"🆕 Downloading the full dump of {remote_meta['latest_full']} ({reason}).", flush=True)
+        full_path = _download_file(self, self.db_config["remote_db_url"],
+                                   dest_folder=os.path.join(downloads, "full_" + remote_meta["latest_full"]))
+        if full_path is None:
+            raise FileNotFoundError("❌ The remote full-dump folder is empty.")
+
+        # Build the new DB next to the old one and swap it in only when complete
+        _create_local_db_from_dump(self, full_path, db_path=db_path)
+        _save_local_metadata(self, remote_meta["latest_full"])
+        last_sync = latest_full
+        if not keep_downloads:
+            os.remove(full_path)
+        print(f"🎉 Local database rebuilt from the full dump of {remote_meta['latest_full']}.", flush=True)
+
+    # -----------------------------
+    # Case 1: remote DB has updates newer than local
+    # -----------------------------
+    if latest_update > last_sync:
+        # Incremental updates newer than the last sync, oldest first ("update_YYYY-MM-DD")
+        updates_to_apply = sorted(
+            (datetime.fromisoformat(name.split("_", 1)[1]), name, url)
+            for name, url in remote_meta.get("available_updates", {}).items()
+            if datetime.fromisoformat(name.split("_", 1)[1]) > last_sync
+        )
+        print(f"📂 Found {len(updates_to_apply)} incremental updates: {[n for _, n, _ in updates_to_apply]}", flush=True)
+
+        for date, name, url in updates_to_apply:
+            path = _download_file(self, url, dest_folder=os.path.join(downloads, name))
+            if path is None:
+                print(f"⚠️ {name}: the remote folder is empty, nothing to apply.", flush=True)
+            else:
+                _apply_update_to_local_db(self, db_path, path)
+                if not keep_downloads:
+                    os.remove(path)
+            _save_local_metadata(self, date.date().isoformat())
+
+        _save_local_metadata(self, remote_meta["latest_update"])
+        print(f"🎉 Database successfully updated to {remote_meta['latest_update']}.", flush=True)
+    else:
+        print("✅ Local database already up to date.", flush=True)
+
+    if not keep_downloads:
+        shutil.rmtree(downloads, ignore_errors=True)
+
+
 def _load_local_metadata(self):
-    if not os.path.exists(self.db_config.get("local_metadata_path")):
-        return {"last_sync": "", 
-                "db_path": "/bigdisk/daniele/cornerstone_module/db"} #DP !!! controlla se non ho creato il file come si comporta
-    with open(self.db_config.get("local_metadata_path"), "r") as f:
+    """Local sync state. A missing database file means "never synced", whatever the metadata says."""
+    meta_path = self.db_config.get("local_metadata_path")
+    if not meta_path or not os.path.exists(meta_path) or not os.path.exists(self.db_config["local_db_path"]):
+        return {"last_sync": ""}
+    with open(meta_path, "r") as f:
         return json.load(f)
-    
+
+
 def _save_local_metadata(self, last_sync_date):
     meta_path = self.db_config.get("local_metadata_path")
-
-    # Ensure directory exists
     os.makedirs(os.path.dirname(meta_path), exist_ok=True)
 
-    # Step 1 — Load existing metadata if present
+    metadata = {}
     if os.path.exists(meta_path):
         try:
             with open(meta_path, "r") as f:
@@ -1607,223 +1653,202 @@ def _save_local_metadata(self, last_sync_date):
         except Exception:
             # Corrupted file → start from scratch
             metadata = {}
-    else:
-        metadata = {}
-
-    # Step 2 — Add missing "db_path" if not present
-    if "db_path" not in metadata:
-        # Folder path of the metadata file
-        metadata["db_path"] = os.path.dirname(meta_path)
-
-    # Step 3 — Update last_sync
+    metadata["db_path"] = self.db_config["local_db_path"]
     metadata["last_sync"] = last_sync_date
 
-    # Step 4 — Save merged metadata
-    with open(meta_path, "w") as f:
+    tmp = meta_path + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(metadata, f, indent=2)
-            
+    os.replace(tmp, meta_path)
 
 
 def _fetch_remote_metadata(self, output_folder="db"):
     folder_url = self.db_config.get("remote_metadata_url")
     if not folder_url:
         raise RuntimeError("❌ 'remote_metadata_url' not set in db_config.")
-    
+
     os.makedirs(output_folder, exist_ok=True)
+    print(f"🔍 Fetching remote metadata: {folder_url}", flush=True)
 
-    print(f"🔍 Listing files in remote folder: {folder_url}")
-
-    # Download remotely (gdown will create full tree)
-    gdown.download_folder(
-        url=folder_url,
-        output=output_folder,
-        quiet=False,
-        use_cookies=False
-    )
-
-    # Detect JSON files inside output folder
-    json_files = [
-        f for f in os.listdir(output_folder)
-        if f.lower().endswith(".json")
-    ]
-
+    # gdown returns the paths of the files it downloaded
+    files = gdown.download_folder(url=folder_url, output=output_folder, quiet=True, use_cookies=False) or []
+    json_files = [f for f in files if f.lower().endswith(".json")]
     if not json_files:
-        raise FileNotFoundError("❌ No metadata JSON file found in the downloaded folder.")
-
-    # Pick the first one (or match a prefix if you prefer)
-    downloaded_json = os.path.join(output_folder, json_files[0])
-
-    print(f"📄 Found metadata file: {downloaded_json}")
+        raise FileNotFoundError("❌ No metadata JSON file found in the remote metadata folder.")
 
     # Force a consistent filename
     target_json = os.path.join(output_folder, "remote_db_metadata.json")
+    os.replace(json_files[0], target_json)
 
-    # Rename (overwrite if exists)
-    os.replace(downloaded_json, target_json)
-
-    print(f"📦 Stored metadata as: {target_json}")
-
-    # Load JSON
     with open(target_json, "r") as f:
-        try:
-            meta = json.load(f)
-            print("✅ Successfully parsed remote metadata.")
-            return meta
-        except json.JSONDecodeError:
-            print("⚠️ Invalid JSON. First 500 chars:")
-            print(f.read(500))
-            raise
-        
-        
+        meta = json.load(f)
+    print(f"✅ Remote metadata: full dump {meta['latest_full']}, latest update {meta['latest_update']}.", flush=True)
+    return meta
+
 
 def _download_file(self, folder_url, dest_folder="db"):
-    
+    """Download the single file of a Google Drive folder. Returns its path, or None if the folder is empty."""
     os.makedirs(dest_folder, exist_ok=True)
-
-    # List files before download
-    before_files = set(os.path.join(root, f) 
-                    for root, _, files in os.walk(dest_folder) 
-                    for f in files)
-
-    # Download the folder
-    gdown.download_folder(url=folder_url, output=dest_folder, quiet=False, use_cookies=False)
-
-    # List files after download
-    after_files = set(os.path.join(root, f) 
-                    for root, _, files in os.walk(dest_folder) 
-                    for f in files)
-
-    # Determine newly downloaded files
-    downloaded_files = after_files - before_files
-
-    if len(downloaded_files) == 0:
-        raise FileNotFoundError("❌ No new files were downloaded.")
-    elif len(downloaded_files) > 1:
-        raise RuntimeError(f"❌ Multiple files were downloaded: {downloaded_files}")
-    
-    downloaded_file = downloaded_files.pop()
-    print(f"✅ Successfully downloaded: {downloaded_file}")
+    files = gdown.download_folder(url=folder_url, output=dest_folder, quiet=False, use_cookies=False)
+    files = [f for f in (files or []) if os.path.isfile(f)]
+    if not files:
+        return None
+    if len(files) > 1:
+        raise RuntimeError(f"❌ Expected one file in {folder_url}, found {len(files)}: {files}")
+    print(f"✅ Successfully downloaded: {files[0]}", flush=True)
+    return files[0]
 
 
-    return  downloaded_file
-        
+# MySQL column types → SQLite type affinity (applied to CREATE TABLE statements only, never to data)
+_MYSQL_TYPES = [
+    (r"\b(tinyint|smallint|mediumint|bigint|int|integer)\b(\(\d+\))?(\s+unsigned)?", "INTEGER"),
+    (r"\b(double|float|real)\b(\(\d+(,\d+)?\))?(\s+unsigned)?", "REAL"),
+    (r"\bdecimal\b(\(\d+(,\d+)?\))?(\s+unsigned)?", "REAL"),
+    (r"\b(datetime|timestamp|date|time)\b(\(\d+\))?", "TEXT"),
+    (r"\b(tinytext|mediumtext|longtext|text)\b", "TEXT"),
+    (r"\b(varchar|char)\b\(\d+\)", "TEXT"),
+    (r"\b(tinyblob|mediumblob|longblob|blob)\b", "BLOB"),
+]
+_MYSQL_INSERT = re.compile(r"\s*INSERT INTO `([^`]+)`\s*(\([^)]*\))?\s*VALUES\s*(.*);\s*$", re.DOTALL)
+_MYSQL_STRING_OR_NULL = re.compile(r"('(?:[^'\\]|\\.)*')|\bNULL\b")
 
-        
+
+def _mysql_insert_rows(stmt):
+    """
+    Parse an extended INSERT of a mysqldump into (sql with ? placeholders, list of row tuples).
+
+    The values are parsed by Python (ast.literal_eval: literals only, no code is run) and bound as
+    parameters: SQLite's own text-to-number conversion is not correctly rounded in some versions
+    (3.43-3.46 turn 7.201944444 into 7.2019444440000004), Python's is. mysqldump's string escapes
+    (\\' \\" \\\\ \\n \\r \\t \\0 \\b) are also valid Python escapes.
+    """
+    m = _MYSQL_INSERT.match(stmt)
+    if m is None:
+        raise ValueError(f"❌ Unexpected INSERT statement: {stmt[:200]}")
+    table, columns, values = m.groups()
+    values = _MYSQL_STRING_OR_NULL.sub(lambda v: v.group(1) or "None", values)
+    rows = ast.literal_eval("[" + values + "]")
+    rows = [r if isinstance(r, tuple) else (r,) for r in rows]      # one-column tables: (x) is not a tuple
+    cols = "" if not columns else " " + columns.replace("`", '"')
+    sql = f'INSERT INTO "{table}"{cols} VALUES ({",".join("?" * len(rows[0]))})'
+    return sql, rows
+
+
+def _mysql_statement_to_sqlite(stmt):
+    """
+    Convert one statement of a mysqldump to SQLite: returns (sql, rows), with rows a list of
+    parameter tuples for INSERT statements and None otherwise, or None for MySQL-only statements.
+    """
+    head = stmt.lstrip()[:30].upper()
+    if head.startswith("INSERT INTO"):
+        return _mysql_insert_rows(stmt)
+    if head.startswith("CREATE TABLE"):
+        stmt = stmt.replace("`", '"')
+        # table options after the closing parenthesis (ENGINE=..., CHARSET=..., ...)
+        stmt = re.sub(r"\)[^()]*;\s*$", ");", stmt)
+        # index definitions are not valid inside an SQLite CREATE TABLE
+        stmt = re.sub(r",\s*\n\s*(UNIQUE |FULLTEXT |SPATIAL )?KEY [^\n]*?(?=,?\s*\n)", "", stmt)
+        stmt = re.sub(r"\s+(CHARACTER SET|COLLATE)\s+\w+", "", stmt, flags=re.IGNORECASE)
+        stmt = re.sub(r"\s+COMMENT\s+'(?:[^'\\]|\\.)*'", "", stmt, flags=re.IGNORECASE)
+        # types are rewritten outside quoted names and string literals only (a column may be called "date")
+        parts = re.split(r"(\"[^\"]*\"|'(?:[^'\\]|\\.)*')", stmt)
+        for i in range(0, len(parts), 2):
+            parts[i] = re.sub(r"\s+AUTO_INCREMENT\b", "", parts[i], flags=re.IGNORECASE)
+            for pattern, sqlite_type in _MYSQL_TYPES:
+                parts[i] = re.sub(pattern, sqlite_type, parts[i], flags=re.IGNORECASE)
+        return "".join(parts), None
+    if head.startswith(("DROP TABLE", "DROP VIEW", "CREATE VIEW")):
+        return stmt.replace("`", '"'), None
+    # LOCK/UNLOCK TABLES, SET ..., /*!...*/ conditional comments: MySQL only
+    return None
+
+
+def _create_label_views(conn):
+    """
+    The dump holds the label tables as `DF_<type>_<class>_delta<h>_three_classes_unified`, while
+    create_hdf5_from_db (and the GUI) read `DF_<type>_<class>_delta<h>_three_classes`: expose each
+    one under that name with a view, unless a table or view with that name already exists.
+    """
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")}
+    for name in sorted(names):
+        if name.startswith("DF_") and name.endswith("_three_classes_unified"):
+            view = name[: -len("_unified")]
+            if view not in names:
+                conn.execute(f'CREATE VIEW "{view}" AS SELECT * FROM "{name}"')
+
+
+def _iter_sql_statements(lines):
+    """
+    Group the lines of a mysqldump into complete statements (comments and blank lines skipped).
+    mysqldump escapes newlines inside strings (\\n), so a statement ends at the first line ending
+    with ";" (sqlite3.complete_statement cannot be used: it does not know MySQL's \\' escapes).
+    """
+    buf = []
+    for line in lines:
+        if not buf and (not line.strip() or line.startswith("--")):
+            continue
+        buf.append(line)
+        if line.rstrip().endswith(";"):
+            yield "".join(buf)
+            buf = []
+    if buf and "".join(buf).strip():
+        raise ValueError("❌ The SQL dump ends with an incomplete statement (truncated download?).")
+
+
 def _create_local_db_from_dump(self,  dump_path: str , db_type="sqlite", db_path = None):
     """
-    Create or refresh the local MySQL database from a full SQL dump file (.sql or .sql.gz)
-    in a memory- and disk-efficient way by streaming the dump directly into MySQL.
+    Create or refresh the local database from a full SQL dump file (.sql or .sql.gz).
+
+    SQLite: the MySQL dump is decompressed, converted and imported statement by statement in a
+    single stream (no temporary copies of the dump). The database is built in `<db_path>.partial`
+    and moved to `db_path` only when the import is complete, so a failure never leaves a broken
+    database behind. Any error raises.
     """
     print(f"🛠️  Creating local database from dump: {dump_path}", flush=True)
 
-    
     if db_type == "sqlite":
-        """
-        Restore an SQLite3 database from a .sql or .sql.gz dump file.
-        Uses a temporary file for decompression.
-        """
-        base_name = os.path.basename(dump_path)
-        base_no_ext = base_name.replace(".sql.gz", "").replace(".sql", "")
-        db_name = f"{base_no_ext}.db"
-        db_path = os.path.join(db_path, db_name)
-
-        # Step 1 — Ensure database file exists
+        partial = db_path + ".partial"
+        if os.path.exists(partial):
+            os.remove(partial)
+        opener = gzip.open if dump_path.endswith(".gz") else open
+        conn = sqlite3.connect(partial, isolation_level=None)
+        n_statements = n_skipped = 0
+        t0 = time.time()
         try:
-            os.makedirs(os.path.dirname(db_path), exist_ok=True)
-            conn = sqlite3.connect(db_path)
+            # the file is thrown away if anything fails: no journal needed
+            conn.execute("PRAGMA journal_mode=OFF")
+            conn.execute("PRAGMA synchronous=OFF")
+            conn.execute("BEGIN")
+            with opener(dump_path, "rt", encoding="utf-8", errors="strict") as fin:
+                for stmt in _iter_sql_statements(fin):
+                    converted = _mysql_statement_to_sqlite(stmt)
+                    if converted is None:
+                        n_skipped += 1
+                        continue
+                    sql, rows = converted
+                    try:
+                        if rows is None:
+                            conn.execute(sql)
+                        else:
+                            conn.executemany(sql, rows)
+                    except sqlite3.Error as e:
+                        raise RuntimeError(f"❌ SQLite error on statement #{n_statements + 1}: {e}\n{sql[:500]}") from e
+                    n_statements += 1
+                    if n_statements % 200 == 0:
+                        print(f"   … {n_statements} statements imported ({time.time() - t0:.0f}s)", flush=True)
+            _create_label_views(conn)
+            conn.execute("COMMIT")
+        except BaseException:
             conn.close()
-            print(f"✅ Database file `{db_path}` is ready.", flush=True)
-        except Exception as e:
-            print(f"❌ SQLite error creating database file: {e}", flush=True)
-            return
-
-        # Step 2 — Prepare temporary SQL file
-        print("📦 Preparing SQL dump (temporary file)...", flush=True)
-        tmp_mysql_sql = tempfile.NamedTemporaryFile(delete=False, suffix=".sql").name
-
-        try:
-            if dump_path.endswith(".gz"):
-                with gzip.open(dump_path, "rb") as gz_in, open(tmp_mysql_sql, "wb") as tmp_out:
-                    shutil.copyfileobj(gz_in, tmp_out)
-            else:
-                shutil.copyfile(dump_path, tmp_mysql_sql)
-
-            print(f"✅ Temporary MySQL SQL file: {tmp_mysql_sql}", flush=True)
-
-            # Step 3 — Convert to SQLite SQL (STREAMING, no huge memory load)
-            print("🔧 Converting MySQL SQL → SQLite SQL (streaming)...", flush=True)
-
-            tmp_sqlite_sql = tempfile.NamedTemporaryFile(delete=False, suffix=".sql").name
-
-            with open(tmp_mysql_sql, "r", encoding="utf-8", errors="ignore") as fin, \
-                open(tmp_sqlite_sql, "w", encoding="utf-8") as fout:
-
-                for line in fin:
-
-                    # Skip MySQL LOCK/UNLOCK TABLES
-                    if "LOCK TABLES" in line or "UNLOCK TABLES" in line:
-                        continue
-
-                    # Remove /*!40101 ... */
-                    if "/*!" in line:
-                        continue
-
-                    # Remove ENGINE=..., CHARSET=..., AUTO_INCREMENT
-                    for bad in ["ENGINE=", "CHARSET=", "COLLATE=", "AUTO_INCREMENT="]:
-                        if bad in line:
-                            # Remove everything after first occurrence
-                            line = line.split(bad)[0] + ";\n"
-
-                    # Replace backticks with quotes
-                    line = line.replace("`", '"')
-
-                    # Fix common MySQL → SQLite type differences
-                    replacements = {
-                        "tinyint": "INTEGER",
-                        "smallint": "INTEGER",
-                        "mediumint": "INTEGER",
-                        "int(": "INTEGER(",
-                        "bigint": "INTEGER",
-                        "double": "REAL",
-                        "float": "REAL",
-                        "decimal": "REAL",
-                        "datetime": "TEXT",
-                        "timestamp": "TEXT",
-                        "text": "TEXT",
-                        "longtext": "TEXT",
-                        "mediumtext": "TEXT",
-                        "blob": "BLOB",
-                    }
-                    for mysql_t, sqlite_t in replacements.items():
-                        safe_pattern = re.escape(mysql_t)
-                        line = re.sub(safe_pattern, sqlite_t, line, flags=re.IGNORECASE)
-
-                    # Fix trailing comma before closing parenthesis
-                    line = re.sub(r",\s*\)", ")", line)
-
-                    fout.write(line)
-
-            print(f"✅ SQLite-compatible SQL written to: {tmp_sqlite_sql}", flush=True)
-
-            # Step 4 — Import into SQLite
-            print("📥 Importing SQL into SQLite...", flush=True)
-            subprocess.run(f"sqlite3 {db_path} < {tmp_sqlite_sql}", shell=True, check=True)
-            print(f"✅ SQLite database `{db_path}` successfully restored from {dump_path}", flush=True)
-
-        except subprocess.CalledProcessError as e:
-            print(f"❌ SQLite restore failed (code {e.returncode})", flush=True)
-        except Exception as e:
-            print(f"❌ Error: {e}", flush=True)
-        finally:
-            # Clean up
-            for f in [tmp_mysql_sql, locals().get("tmp_sqlite_sql")]:
-                if f and os.path.exists(f):
-                    os.remove(f)
-            print("🧹 Temporary files removed.", flush=True)
-
+            os.remove(partial)
+            raise
+        conn.close()
+        os.replace(partial, db_path)
+        print(f"✅ SQLite database `{db_path}` restored from {dump_path}: {n_statements} statements "
+              f"imported, {n_skipped} MySQL-only statements skipped ({time.time() - t0:.0f}s).", flush=True)
         return
-        
-        
+
+
     elif db_type == "Mysql":
             
         db_name = self.db_config.get("database")
@@ -1902,7 +1927,10 @@ def _apply_update_to_local_db(self, db_path: str, bin_path: str):
         with open(sql_path, "r") as f:
             sql_script = f.read()
 
-        # 3. Execute the entire SQL script efficiently
+        # 3. Execute the entire SQL script in one transaction: a failure leaves the DB unchanged
+        #    (executescript would otherwise commit every statement on its own)
+        if not re.match(r"\s*BEGIN\b", sql_script, flags=re.IGNORECASE):
+            sql_script = f"BEGIN;\n{sql_script}\nCOMMIT;"
         conn.executescript(sql_script)
 
         conn.commit()
