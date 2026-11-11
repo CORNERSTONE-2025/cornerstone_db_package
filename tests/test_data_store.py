@@ -87,3 +87,26 @@ def test_bootstrap_from_legacy_sqlite(tmp_path):
     con.close()
     out = bootstrap_from_sqlite(db, store, series=["DEF"], references=False, log=lambda m: None)
     assert out["sharp/DEF"]["rows"] == 9 and len(store.sharp_files("DEF")) == 2
+
+
+def test_bootstrap_from_snapshot(tmp_path, monkeypatch):
+    import shutil
+    import gdown
+    src = DataStore(tmp_path / "published")
+    src.record_dataset("sharp/DEF", {"harp_000000-000999.parquet":
+                                     src.write_sharp_block("DEF", 0, sharp.normalize(_raw(harps=(1, 2))))})
+
+    def fake_download_folder(url, output, quiet, remaining_ok):
+        shutil.copytree(src.root, output, dirs_exist_ok=True)
+        return [str(p) for p in __import__("pathlib").Path(output).rglob("*") if p.is_file()]
+
+    monkeypatch.setattr(gdown, "download_folder", fake_download_folder)
+    from cornerstone.data import bootstrap_from_snapshot
+    store = DataStore(tmp_path / "local")
+    bootstrap_from_snapshot(store, url="https://drive.example/folder", log=lambda m: None)
+    assert len(store.read_sharp("DEF")) == 6 and "sharp/DEF" in store.load_manifest()["datasets"]
+    assert not list(store.root.glob(".snapshot-*"))
+    # a corrupted file is refused
+    (src.sharp_dir("DEF") / "harp_000000-000999.parquet").write_bytes(b"corrupted")
+    with pytest.raises(RuntimeError, match="corrupted"):
+        bootstrap_from_snapshot(DataStore(tmp_path / "other"), url="x", log=lambda m: None)

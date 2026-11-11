@@ -32,6 +32,11 @@ COMPRESSION = "zstd"
 MANIFEST = "manifest.json"
 
 
+def say(msg: str) -> None:
+    """Default progress log: printed and flushed at once (logs redirected to files stay live)."""
+    print(msg, flush=True)
+
+
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -140,12 +145,31 @@ class DataStore:
         tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True))
         os.replace(tmp, p)
 
-    def record_dataset(self, name: str, files: dict[str, dict], **info) -> dict:
-        """Register (or replace) dataset ``name`` in the manifest with its files and provenance."""
+    def record_dataset(self, name: str, files: dict[str, dict], merge: bool = False, **info) -> dict:
+        """Register dataset ``name`` in the manifest with its files and provenance.
+
+        ``merge=False`` replaces the entry; ``merge=True`` adds/replaces only the given files
+        (incremental updates), keeping the others and the previous provenance fields.
+        """
         manifest = self.load_manifest()
-        entry = {"updated_at": now_iso(), "files": files,
-                 "rows": sum(f["rows"] for f in files.values()),
-                 "bytes": sum(f["bytes"] for f in files.values()), **info}
+        old = manifest["datasets"].get(name, {}) if merge else {}
+        all_files = {**old.get("files", {}), **files}
+        entry = {**{k: v for k, v in old.items() if k != "files"}, **info,
+                 "updated_at": now_iso(), "files": all_files,
+                 "rows": sum(f["rows"] for f in all_files.values()),
+                 "bytes": sum(f["bytes"] for f in all_files.values())}
         manifest["datasets"][name] = entry
         self.save_manifest(manifest)
         return entry
+
+    def forget_files(self, name: str, file_names: Iterable[str]) -> None:
+        """Remove files from a dataset entry of the manifest (the files must already be deleted)."""
+        manifest = self.load_manifest()
+        entry = manifest["datasets"].get(name)
+        if not entry:
+            return
+        for f in file_names:
+            entry["files"].pop(f, None)
+        entry["rows"] = sum(f["rows"] for f in entry["files"].values())
+        entry["bytes"] = sum(f["bytes"] for f in entry["files"].values())
+        self.save_manifest(manifest)
