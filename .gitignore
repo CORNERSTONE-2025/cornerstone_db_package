@@ -1,3 +1,5 @@
 # local database, downloads and sync metadata written by Cornerstone.db_update() (local_db_path)
 db/
 __pycache__/
+# local Parquet store (cornerstone.data, data_root)
+datastore/

@@ -15,6 +15,7 @@ The main package containing all components for data processing, model training, 
 - **`cornerstone.py`** - Main API and orchestration module
 - **`sharp_data.py`** - SHARP data ingestion and preprocessing
 - **`config.py`** - Configuration management
+- **`data/`** - Local Parquet store of the raw data (SHARP DEF/NRT, references); see `cornerstone/data/README.md`
 - **`ml/`** - Machine learning modules
   - **`models/`** - Model implementations (transformers, LSTM, XGBoost, Rocket, etc.)
   - **`utils/`** - Training utilities, metrics, datasets, and configuration
