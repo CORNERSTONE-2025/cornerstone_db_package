@@ -137,6 +137,7 @@ def bootstrap_from_snapshot(store: DataStore, url: str | None = None,
 
     After the snapshot, ``update_all`` downloads only what changed since it was made.
     """
+    import inspect
     import json
     import tempfile
 
@@ -151,7 +152,11 @@ def bootstrap_from_snapshot(store: DataStore, url: str | None = None,
     store.root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=store.root, prefix=".snapshot-") as tmp:
         log(f"Downloading the Parquet snapshot from {url}")
-        paths = gdown.download_folder(url=url, output=tmp, quiet=False, remaining_ok=True)
+        kwargs = {"url": url, "output": tmp, "quiet": False}
+        # gdown < 6 stops at 50 files per folder unless remaining_ok; gdown 6 dropped the argument
+        if "remaining_ok" in inspect.signature(gdown.download_folder).parameters:
+            kwargs["remaining_ok"] = True
+        paths = gdown.download_folder(**kwargs)
         if not paths:
             raise RuntimeError("The snapshot folder is empty or not reachable")
         tmp = Path(tmp)
