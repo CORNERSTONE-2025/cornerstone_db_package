@@ -95,7 +95,11 @@ class SharpDataset(Dataset):
             if compact_name not in f: # or decomposed_name not in f
                 raise ValueError(f"label '{compact_name}'  not found.")#or '{decomposed_name}' Available: {available_labels}
             self._raw_labels = np.array([self.decode_if_bytes(y) for y in f[compact_name][:]])
-            #self._raw_labels = np.array([self.decode_if_bytes(y) for y in f[decomposed_name][:]])
+            # stratification class (C/M/X... or NO1..NO4), used for the splits and multi_class;
+            # files without it fall back to the prediction label
+            strat_name = f'label_u_{label}'
+            self._strat_labels = (np.array([self.decode_if_bytes(y) for y in f[strat_name][:]])
+                                  if strat_name in f else self._raw_labels.copy())
             
             # Check if we have enough timesteps
             available_timesteps = raw_X.shape[1]
@@ -123,7 +127,7 @@ class SharpDataset(Dataset):
             if self.multi_class:
                 # Use decomposed labels (C, M, X, NO) - compress all NO types into single NO
                 compressed_labels = []
-                for lbl in self._raw_labels:
+                for lbl in self._strat_labels:
                     if lbl.startswith('NO'):
                         compressed_labels.append('NO')
                     else:
@@ -162,7 +166,7 @@ class SharpDataset(Dataset):
                 self.harp_numbers = self.harp_numbers[valid]
                 self._raw_timestamps = self._raw_timestamps[valid]
                 self._raw_labels = self._raw_labels[valid]
-                self._raw_labels = self._raw_labels[valid]
+                self._strat_labels = self._strat_labels[valid]
         
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
@@ -449,7 +453,7 @@ class FeatureSelector(Transform):  #TODO Update the feature groups according to 
         new_dataset.harp_numbers = dataset.harp_numbers
         new_dataset._raw_timestamps = dataset._raw_timestamps
         new_dataset._raw_labels = dataset._raw_labels
-        #new_dataset._raw_labels = dataset._raw_labels
+        new_dataset._strat_labels = dataset._strat_labels
         if dataset.use_mask:
             new_dataset.mask = dataset.mask[:, :, self.feature_indices]
         if dataset.multi_class:
@@ -531,7 +535,7 @@ class TimeWindowSelector(Transform):
         new_dataset.harp_numbers = dataset.harp_numbers[self.valid_indices]
         new_dataset._raw_timestamps = dataset._raw_timestamps[self.valid_indices]
         new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
-        new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
+        new_dataset._strat_labels = dataset._strat_labels[self.valid_indices]
         if dataset.use_mask:
             new_dataset.mask = dataset.mask[self.valid_indices]
         if dataset.multi_class:
@@ -626,7 +630,7 @@ class TimeWindowFilter(Transform):
         new_dataset.harp_numbers = dataset.harp_numbers[self.valid_indices]
         new_dataset._raw_timestamps = dataset._raw_timestamps[self.valid_indices]
         new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
-        new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
+        new_dataset._strat_labels = dataset._strat_labels[self.valid_indices]
         if dataset.use_mask:
             new_dataset.mask = dataset.mask[self.valid_indices]
         if dataset.multi_class:
@@ -733,7 +737,7 @@ class TimeWindowExcluder(Transform):
         new_dataset.harp_numbers = dataset.harp_numbers[self.valid_indices]
         new_dataset._raw_timestamps = dataset._raw_timestamps[self.valid_indices]
         new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
-#        new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
+        new_dataset._strat_labels = dataset._strat_labels[self.valid_indices]
         if dataset.use_mask:
             new_dataset.mask = dataset.mask[self.valid_indices]
         if dataset.multi_class:
@@ -785,7 +789,7 @@ class MissingnessFilter(Transform):
         new_dataset.harp_numbers = dataset.harp_numbers[self.valid_indices]
         new_dataset._raw_timestamps = dataset._raw_timestamps[self.valid_indices]
         new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
-        new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
+        new_dataset._strat_labels = dataset._strat_labels[self.valid_indices]
         if dataset.use_mask:
             new_dataset.mask = dataset.mask[self.valid_indices]
         if dataset.multi_class:
@@ -906,7 +910,7 @@ class MultiWindowMissingnessFilter(Transform):
         new_dataset.harp_numbers = dataset.harp_numbers[self.valid_indices]
         new_dataset._raw_timestamps = dataset._raw_timestamps[self.valid_indices]
         new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
-        new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
+        new_dataset._strat_labels = dataset._strat_labels[self.valid_indices]
         if dataset.use_mask:
             new_dataset.mask = dataset.mask[self.valid_indices]
         if dataset.multi_class:
@@ -1031,7 +1035,7 @@ class MultiWindowEmptyFilter(Transform):
         new_dataset.harp_numbers = dataset.harp_numbers[self.valid_indices]
         new_dataset._raw_timestamps = dataset._raw_timestamps[self.valid_indices]
         new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
-#        new_dataset._raw_labels = dataset._raw_labels[self.valid_indices]
+        new_dataset._strat_labels = dataset._strat_labels[self.valid_indices]
         if dataset.use_mask:
             new_dataset.mask = dataset.mask[self.valid_indices]
         if dataset.multi_class:
@@ -1160,7 +1164,7 @@ class CMASKFilter(Transform): #TODO: Update the CMask filtering - this function 
             dataset.harp_numbers = dataset.harp_numbers[mask]
             dataset._raw_timestamps = dataset._raw_timestamps[mask]
             dataset._raw_labels = dataset._raw_labels[mask]
-            dataset._raw_labels = dataset._raw_labels[mask]
+            dataset._strat_labels = dataset._strat_labels[mask]
         return dataset
     
     def transform_sample(self, sample: dict) -> dict:
@@ -1879,7 +1883,7 @@ class SharpDatasetSplitter:   #TODO: Double check the date logic. I updated the 
         df = pd.DataFrame({
             'index': np.arange(len(dataset)),
             'harp': dataset.harp_numbers,
-            'label': dataset._raw_labels,  # Use decomposed labels for stratification
+            'label': dataset._strat_labels,  # stratification class
             'start_time': [pd.to_datetime(ts[0]) for ts in dataset.timestamps],
             'end_time': [pd.to_datetime(ts[-1]) for ts in dataset.timestamps]
         })
@@ -2126,7 +2130,7 @@ class SharpDatasetSplitter:   #TODO: Double check the date logic. I updated the 
         df = pd.DataFrame({
             'index': np.arange(len(dataset)),
             'harp': dataset.harp_numbers,
-            'label': dataset._raw_labels  # Use decomposed labels for stratification
+            'label': dataset._strat_labels  # stratification class
         })
         
         # Split into train/val and test
@@ -2188,7 +2192,7 @@ def save_split_to_h5(dataset: Dataset, output_path: str, timesteps: int = 121, v
         harp_numbers = original_dataset.harp_numbers[indices]
         raw_timestamps = original_dataset._raw_timestamps[indices]
         raw_labels = original_dataset._raw_labels[indices]
-        raw_labels = original_dataset._raw_labels[indices]
+        strat_labels = original_dataset._strat_labels[indices]
         feature_names = original_dataset.feature_names
         
         # Truncate to requested timesteps if needed
@@ -2201,7 +2205,7 @@ def save_split_to_h5(dataset: Dataset, output_path: str, timesteps: int = 121, v
         harp_numbers = dataset.harp_numbers
         raw_timestamps = dataset._raw_timestamps
         raw_labels = dataset._raw_labels
-        raw_labels = dataset._raw_labels
+        strat_labels = dataset._strat_labels
         feature_names = dataset.feature_names
         
         # Truncate to requested timesteps if needed
@@ -2221,7 +2225,7 @@ def save_split_to_h5(dataset: Dataset, output_path: str, timesteps: int = 121, v
         
         # Save labels
         hf.create_dataset('Y', data=np.array(raw_labels, dtype='S'))
-        hf.create_dataset('Y_u', data=np.array(raw_labels, dtype='S'))
+        hf.create_dataset('Y_u', data=np.array(strat_labels, dtype='S'))
         
         # Save feature names if available
         if feature_names:
@@ -2235,7 +2239,7 @@ def save_split_to_h5(dataset: Dataset, output_path: str, timesteps: int = 121, v
             print(f"  - Features: {X.shape[2]}")
             print(f"  - Timesteps: {X.shape[1]}")
             print(f"  - Labels: {np.unique(raw_labels)}")
-            print(f"  - Decomposed Labels: {np.unique(raw_labels)}")
+            print(f"  - Stratification classes: {np.unique(strat_labels)}")
 
 def save_splits(splits: Dict[str, List[Dataset]], output_dir: str, prefix: str = "flare_split", output_path: Optional[str] = None, splitting_method: Optional[str] = None, verbose: bool = False) -> None:
     """Save all splits to HDF5 files.

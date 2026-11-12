@@ -9,8 +9,29 @@ the artifacts that use them).
 |---|---|---|
 | `require_position` | `True` | drop records with an empty patch (`LAT_MIN`/`LON_MIN` null) — what the former database kept |
 | `quality_mask` | `None` | drop records with any of these `QUALITY` bits |
-| `min_cmask` | `None` | minimum `CMASK` |
+| `quality_values` | `None` | keep only records whose `QUALITY` is exactly one of these values |
+| `cmask_gt` | `None` | keep `CMASK` > value |
+| `meangbt_gt` | `None` | keep `MEANGBT` > value |
 | `max_abs_lon` | `None` | patch within ±lon of the central meridian |
+| `exclude_years` | `()` | drop these years (year of the JSOC `T_OBS`, TAI) |
+
+`QualityFilter.legacy_clean(series)` reproduces the rows of the former `SHARPC_clean_*` tables
+(filters of `000_README_SHARPC_clean_NRT.pdf`; checked on the dump of 2025-06-06: identical row sets,
+DEF 1,820,785 and NRT 1,260,158 records):
+
+| | DEF | NRT |
+|---|---|---|
+| `QUALITY` | exactly `0x00000000` | exactly `0x00000400` (cosmic-ray bit, set on almost every NRT record) |
+| `CMASK` | > 5000 | > 5000 |
+| `MEANGBT` | > 0 | > 0 |
+| years | all | 2013 excluded |
+
+## Features: `FEATURE_SETS`, `derive`
+
+`"all"`: the 22 SHARP keywords of the former `SHARPC_all`; `"clean"`: the 17 features of
+`SHARPC_clean` with the normalizations `KEY_N1 = KEY / CMASK` (USFLUX, TOTUSJZ, TOTUSJH) and
+`KEY_N2 = KEY / MEANGBT` (MEANGBZ, MEANGBH), computed on the fly from the raw records (equal to the
+dump within its 6-digit rounding). Any list of keywords and `_N1`/`_N2` names is accepted.
 
 `harp_spans` gives the first/last observation of every HARP after the filter ("observed at t" =
 `start <= t <= end`, as in the former labeling); `harp_regions` the (HARP, NOAA region) pairs:
