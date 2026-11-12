@@ -16,13 +16,21 @@ from ..data import DataStore
 from ..processing import FlareConfig, QualityFilter, associate, harp_spans
 from .core import LABELS, LabelConfig, class_letter, issue_grid, label, threshold_flux
 
-__all__ = ["LabelConfig", "label", "label_from_store", "threshold_flux", "issue_grid", "class_letter", "LABELS"]
+__all__ = ["LabelConfig", "label", "label_from_store", "labels_and_flares", "threshold_flux", "issue_grid", "class_letter", "LABELS"]
 
 
 def label_from_store(store: DataStore, series: str, config: LabelConfig = LabelConfig(),
                      quality: QualityFilter = QualityFilter(), flares: FlareConfig = FlareConfig()
                      ) -> tuple[pd.DataFrame, dict]:
     """Labels of the HARPs of ``series`` (DEF/NRT) from the store, and their metadata."""
+    out, _, meta = labels_and_flares(store, series, config, quality, flares)
+    return out, meta
+
+
+def labels_and_flares(store: DataStore, series: str, config: LabelConfig = LabelConfig(),
+                      quality: QualityFilter = QualityFilter(), flares: FlareConfig = FlareConfig()
+                      ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """As ``label_from_store``, plus the flare -> HARP association used (one row per event and HARP)."""
     t0 = time.time()
     spans = harp_spans(store, series, quality)
     assoc, assoc_stats = associate(store, series, quality, flares)
@@ -45,4 +53,4 @@ def label_from_store(store: DataStore, series: str, config: LabelConfig = LabelC
                    "strat_class": out["strat_class"].value_counts().to_dict()},
         "duration_s": round(time.time() - t0, 1),
     }
-    return out, meta
+    return out, assoc, meta
