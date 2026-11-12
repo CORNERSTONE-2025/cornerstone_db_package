@@ -106,3 +106,16 @@ float32 relative error ≤ 6·10⁻⁸.
 
 The store folder is also the snapshot to publish (Google Drive) so that new installations
 download ~550 MB of Parquet instead of building the database from the dump.
+
+## Published snapshot
+
+`bootstrap_url` in `cornerstone/configs/data_config.json` points to the public Drive folder of the
+snapshot of 2026-11-12 (`manifest.json`, `raw/`, `reference/`; ~630 MB, raw data as downloaded from
+the sources, no `.cache`). `bootstrap-snapshot` lists the folder, downloads every file of its
+manifest into `<root>/.snapshot-partial`, checks the sha256 of each one and moves them into the
+store only when all of them are verified. If Drive interrupts the download (network, quota),
+running the command again resumes it, skipping the files already verified.
+
+To publish a new snapshot: upload `manifest.json`, `raw/` and `reference/` of an up-to-date store
+(without `.cache`) to a new Drive folder, share it as "anyone with the link" (reader) and set its
+URL as `bootstrap_url`.

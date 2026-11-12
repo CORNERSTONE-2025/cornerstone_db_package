@@ -10,6 +10,7 @@ unchanged, under ``reference/legacy`` to compare the new labeling with the old o
 """
 from __future__ import annotations
 
+import inspect
 import sqlite3
 import time
 from contextlib import closing
@@ -129,17 +130,51 @@ def bootstrap_from_sqlite(sqlite_path: str | Path, store: DataStore,
 
 
 # ---------------------------------------------------------------------------------------- snapshot
+SNAPSHOT_PARTIAL = ".snapshot-partial"      # kept between attempts: a new call resumes from it
+_DRIVE_DOWNLOAD = "https://drive.usercontent.google.com/download"
+
+
+def _drive_get(file_id: str, dst: Path, retries: int = 5, wait: float = 10.0) -> None:
+    """Download one public Drive file to ``dst`` (direct endpoint, retries with backoff).
+
+    gdown's per-file download parses the HTML of drive.google.com/uc and, after a few large files,
+    stops finding the link ("Cannot retrieve the public link"), while the direct endpoint keeps
+    working: gdown is only used to list the folder.
+    """
+    import requests
+
+    tmp = dst.with_name(dst.name + ".part")
+    for attempt in range(1, retries + 1):
+        try:
+            with requests.get(_DRIVE_DOWNLOAD, params={"id": file_id, "export": "download", "confirm": "t"},
+                              stream=True, timeout=(30, 300)) as r:
+                r.raise_for_status()
+                if "text/html" in r.headers.get("content-type", ""):
+                    raise RuntimeError("Drive answered with a web page instead of the file (quota or permissions)")
+                with open(tmp, "wb") as fh:
+                    for chunk in r.iter_content(1 << 20):
+                        fh.write(chunk)
+            tmp.replace(dst)
+            return
+        except Exception as err:                                   # noqa: BLE001 - network: retry
+            tmp.unlink(missing_ok=True)
+            if attempt == retries:
+                raise RuntimeError(f"{dst.name}: download failed after {retries} attempts ({err})") from err
+            time.sleep(wait * attempt)
+
+
 def bootstrap_from_snapshot(store: DataStore, url: str | None = None,
                             log: Callable[[str], None] = say) -> dict:
-    """Create the store from the published Parquet snapshot (a Google Drive folder with the store
-    layout: ``manifest.json``, ``raw/...``). Every file is checked against the sha256 of the
-    snapshot manifest; files that do not match are removed and the call raises.
+    """Create the store from the published Parquet snapshot (a public Google Drive folder with the
+    store layout: ``manifest.json``, ``raw/...``, ``reference/...``).
 
+    Every file is checked against the sha256 of the snapshot manifest. Files are downloaded into
+    ``<root>/.snapshot-partial`` and moved into the store only when all of them are verified; if
+    the download stops (network, Drive quota), calling again resumes it, skipping verified files.
     After the snapshot, ``update_all`` downloads only what changed since it was made.
     """
-    import inspect
     import json
-    import tempfile
+    import shutil
 
     import gdown
 
@@ -150,32 +185,53 @@ def bootstrap_from_snapshot(store: DataStore, url: str | None = None,
     if not url:
         raise ValueError("No snapshot URL: set bootstrap_url in cornerstone/configs/data_config.json")
     store.root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=store.root, prefix=".snapshot-") as tmp:
-        log(f"Downloading the Parquet snapshot from {url}")
-        kwargs = {"url": url, "output": tmp, "quiet": False}
-        # gdown < 6 stops at 50 files per folder unless remaining_ok; gdown 6 dropped the argument
-        if "remaining_ok" in inspect.signature(gdown.download_folder).parameters:
-            kwargs["remaining_ok"] = True
-        paths = gdown.download_folder(**kwargs)
-        if not paths:
-            raise RuntimeError("The snapshot folder is empty or not reachable")
-        tmp = Path(tmp)
-        snap = json.loads((tmp / MANIFEST).read_text())
-        bad = []
-        for name, d in snap["datasets"].items():
-            for f, info in d["files"].items():
-                if not info.get("sha256"):
-                    continue
-                p = tmp / _dataset_dir(name) / f
-                if not p.exists() or sha256(p) != info["sha256"]:
-                    bad.append(f"{name}/{f}")
-        if bad:
-            raise RuntimeError(f"Snapshot files missing or corrupted: {bad[:5]}{' ...' if len(bad) > 5 else ''}")
-        for p in sorted(tmp.rglob("*.parquet")):
-            dst = store.root / p.relative_to(tmp)
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            p.replace(dst)
-        store.save_manifest(snap)
+    tmp = store.root / SNAPSHOT_PARTIAL
+    tmp.mkdir(exist_ok=True)
+
+    log(f"Listing the Parquet snapshot {url}")
+    kwargs = {"url": url, "output": str(tmp), "quiet": True, "skip_download": True}
+    # gdown < 6 stops at 50 files per folder unless remaining_ok; gdown 6 dropped the argument
+    if "remaining_ok" in inspect.signature(gdown.download_folder).parameters:
+        kwargs["remaining_ok"] = True
+    listing = gdown.download_folder(**kwargs) or []
+    files = {Path(f.local_path).resolve().relative_to(tmp.resolve()).as_posix(): f.id for f in listing}
+    if MANIFEST not in files:
+        raise RuntimeError("The snapshot folder is empty, not public, or has no manifest.json")
+
+    _drive_get(files[MANIFEST], tmp / MANIFEST)
+    snap = json.loads((tmp / MANIFEST).read_text())
+    expected = {(_dataset_dir(name) / f).as_posix(): info.get("sha256")
+                for name, d in snap["datasets"].items() for f, info in d["files"].items()}
+    missing = sorted(set(expected) - set(files))
+    if missing:
+        raise RuntimeError(f"Files of the manifest not in the snapshot folder: {missing[:5]}"
+                           f"{' ...' if len(missing) > 5 else ''}")
+
+    bad = []
+    for n, (rel, digest) in enumerate(sorted(expected.items()), 1):
+        p = tmp / rel
+        if p.exists() and (not digest or sha256(p) == digest):
+            continue                                               # verified by a previous attempt
+        log(f"[{n}/{len(expected)}] {rel}")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            _drive_get(files[rel], p)
+        except RuntimeError as err:
+            log(str(err))
+            bad.append(rel)
+            continue
+        if digest and sha256(p) != digest:
+            p.unlink()
+            bad.append(rel)
+    if bad:
+        raise RuntimeError(f"Snapshot files not downloaded or corrupted: {bad[:5]}{' ...' if len(bad) > 5 else ''}"
+                           " - run the command again to resume (verified files are kept)")
+    for rel in expected:
+        dst = store.root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        (tmp / rel).replace(dst)
+    store.save_manifest(snap)
+    shutil.rmtree(tmp, ignore_errors=True)
     log(f"Snapshot installed in {store.root}")
     return snap
 

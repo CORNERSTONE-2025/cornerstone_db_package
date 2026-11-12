@@ -1,5 +1,6 @@
 """Data layer: time scale, SHARP normalization, Parquet store and bootstrap from a legacy SQLite DB."""
 import sqlite3
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -91,22 +92,41 @@ def test_bootstrap_from_legacy_sqlite(tmp_path):
 
 def test_bootstrap_from_snapshot(tmp_path, monkeypatch):
     import shutil
+    from types import SimpleNamespace
+
     import gdown
+
+    from cornerstone.data import bootstrap as bs
     src = DataStore(tmp_path / "published")
     src.record_dataset("sharp/DEF", {"harp_000000-000999.parquet":
                                      src.write_sharp_block("DEF", 0, sharp.normalize(_raw(harps=(1, 2))))})
 
-    def fake_download_folder(url, output, quiet, remaining_ok):
-        shutil.copytree(src.root, output, dirs_exist_ok=True)
-        return [str(p) for p in __import__("pathlib").Path(output).rglob("*") if p.is_file()]
+    def fake_listing(url, output, quiet, skip_download, **kw):         # file id = path in the folder
+        assert skip_download
+        return [SimpleNamespace(id=p.relative_to(src.root).as_posix(), local_path=str(Path(output) / p.relative_to(src.root)))
+                for p in src.root.rglob("*") if p.is_file()]
 
-    monkeypatch.setattr(gdown, "download_folder", fake_download_folder)
-    from cornerstone.data import bootstrap_from_snapshot
+    calls = []
+
+    def fake_get(file_id, dst, **kw):
+        calls.append(file_id)
+        shutil.copyfile(src.root / file_id, dst)
+
+    monkeypatch.setattr(gdown, "download_folder", fake_listing)
+    monkeypatch.setattr(bs, "_drive_get", fake_get)
     store = DataStore(tmp_path / "local")
-    bootstrap_from_snapshot(store, url="https://drive.example/folder", log=lambda m: None)
+    bs.bootstrap_from_snapshot(store, url="https://drive.example/folder", log=lambda m: None)
     assert len(store.read_sharp("DEF")) == 6 and "sharp/DEF" in store.load_manifest()["datasets"]
     assert not list(store.root.glob(".snapshot-*"))
-    # a corrupted file is refused
+    # a corrupted file is refused; the partial download is kept and a new call resumes from it
+    good = (src.sharp_dir("DEF") / "harp_000000-000999.parquet").read_bytes()
     (src.sharp_dir("DEF") / "harp_000000-000999.parquet").write_bytes(b"corrupted")
+    other = DataStore(tmp_path / "other")
     with pytest.raises(RuntimeError, match="corrupted"):
-        bootstrap_from_snapshot(DataStore(tmp_path / "other"), url="x", log=lambda m: None)
+        bs.bootstrap_from_snapshot(other, url="x", log=lambda m: None)
+    assert (other.root / bs.SNAPSHOT_PARTIAL).is_dir()
+    (src.sharp_dir("DEF") / "harp_000000-000999.parquet").write_bytes(good)
+    calls.clear()
+    bs.bootstrap_from_snapshot(other, url="x", log=lambda m: None)
+    assert calls == ["manifest.json", "raw/sharp/DEF/harp_000000-000999.parquet"]
+    assert len(other.read_sharp("DEF")) == 6
