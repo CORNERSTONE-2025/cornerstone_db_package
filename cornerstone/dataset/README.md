@@ -29,7 +29,7 @@ the former missing-data log).
 | dataset | shape | content |
 |---|---|---|
 | `X` | (N, T, F) float32 | features, NaN = missing, T = `window_hours*60/sampling_minutes + 1` |
-| `Y`, `label_<name>` | (N,) bytes | prediction label YES / NO1..NO4 |
+| `Y`, `label_<name>` | (N,) bytes | prediction label YES / NO |
 | `label_u_<name>` | (N,) bytes | stratification class: C/M/X... or NO1..NO4 |
 | `HARPNUM` | (N,) int32 | |
 | `timestamps` | (N, T) bytes | `YYYY-mm-dd HH:MM:SS` (UTC) |

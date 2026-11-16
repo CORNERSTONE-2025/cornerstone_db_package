@@ -3,13 +3,20 @@
 For every issue time ``t_X`` of a regular grid and every HARP observed at ``t_X``
 (``start <= t_X <= end``), with the **flare window** ``[t_X, t_X + W]``:
 
-**Prediction label** (threshold ``S_p``, ``LabelConfig.threshold``):
+**Prediction label** (threshold ``S_p``, ``LabelConfig.threshold``): the target of the models,
+binary.
 
 - ``YES`` if at least one flare with flux >= ``S_p`` peaks in the flare window;
-- otherwise ``NO1``–``NO4`` from the flares >= ``S_p`` *before* and *after*:
+- ``NO`` otherwise.
+
+**Stratification class** (threshold ``S_s``, ``strat_threshold``, default ``S_p``; same flare
+window): it describes the history of the region and is only used to stratify the dataset splits.
+
+- the class letter (C, M, X, ...) of the strongest flare of the flare window when it is >= ``S_s``;
+- otherwise ``NO1``–``NO4`` from the flares >= ``S_s`` *before* and *after* the flare window:
 
   ======  ========  =======
-  label   before    after
+  class   before    after
   ======  ========  =======
   NO1     no        no
   NO2     no        yes
@@ -20,11 +27,6 @@ For every issue time ``t_X`` of a regular grid and every HARP observed at ``t_X`
   "before" is ``[t_X - L, t_X]`` and "after" ``[t_X + W, t_X + W + L]``; without ``L``
   (``strat_window_hours=None``, default) "before" is the whole past of the HARP and "after" its
   whole future.
-
-**Stratification class** (threshold ``S_s``, ``strat_threshold``, default ``S_p``; same flare
-window and before/after windows): the class letter (C, M, X, ...) of the strongest flare of the flare
-window when it is >= ``S_s``, otherwise ``NO1``–``NO4`` computed with ``S_s``. It is used to
-stratify the dataset splits; the target of the models is ``YES`` vs ``NO*``.
 
 Window bounds are inclusive, as in the former implementation (``BETWEEN``). The former static
 labels are reproduced with ``W = L = 24 h``, ``step = 24 h``, grid from 1996-01-01, ``S_s = S_p``
@@ -38,7 +40,8 @@ import numpy as np
 import pandas as pd
 
 CLASS_FLUX = {"A": 1e-8, "B": 1e-7, "C": 1e-6, "M": 1e-5, "X": 1e-4}
-LABELS = ("YES", "NO1", "NO2", "NO3", "NO4")
+LABELS = ("YES", "NO")                                # prediction label
+STRAT_NO = ("NO1", "NO2", "NO3", "NO4")               # stratification classes without a flare >= S_s
 _NO = np.array(["NO1", "NO2", "NO4", "NO3"])          # index = 2*before + after
 _REL = 1e-9                                           # float tolerance on the thresholds
 
@@ -124,10 +127,11 @@ def label(spans: pd.DataFrame, flares: pd.DataFrame, config: LabelConfig = Label
 
     Returns
     -------
-    DataFrame sorted by (t_X, HARPNUM) with ``t_X``, ``HARPNUM``, ``label`` (YES/NO1..NO4),
-    ``target`` (1 for YES), ``strat_class``, ``max_flux`` and ``max_class`` (strongest flare of the
-    flare window, any class), ``n_window``/``n_before``/``n_after`` (flares >= S_p), ``obs_start``,
-    ``obs_end`` (observation span of the HARP).
+    DataFrame sorted by (t_X, HARPNUM) with ``t_X``, ``HARPNUM``, ``label`` (YES/NO, threshold S_p),
+    ``target`` (1 for YES), ``strat_class`` (C/M/X... or NO1..NO4, threshold S_s), ``max_flux`` and
+    ``max_class`` (strongest flare of the flare window, any class), ``n_window`` (flares >= S_p in the
+    flare window), ``n_before``/``n_after`` (flares >= S_s before/after, as used by ``strat_class``),
+    ``obs_start``, ``obs_end`` (observation span of the HARP).
     """
     W = pd.Timedelta(hours=config.flare_window_hours)
     L = None if config.strat_window_hours is None else pd.Timedelta(hours=config.strat_window_hours)
@@ -166,17 +170,14 @@ def label(spans: pd.DataFrame, flares: pd.DataFrame, config: LabelConfig = Label
             max_flux = fw.max(axis=1)
             big_p, big_s = ff >= s_p, ff >= s_s
             n_window = (in_win & big_p).sum(1)
-            n_before = (before & big_p).sum(1)
-            n_after = (after & big_p).sum(1)
-            b_s = (before & big_s).any(1)
-            a_s = (after & big_s).any(1)
+            n_before = (before & big_s).sum(1)
+            n_after = (after & big_s).sum(1)
         else:
             max_flux = np.zeros(n)
             n_window = n_before = n_after = np.zeros(n, dtype=int)
-            b_s = a_s = np.zeros(n, dtype=bool)
         yes = n_window > 0
-        lab = np.where(yes, "YES", _NO[2 * (n_before > 0) + (n_after > 0)])
-        strat = np.where(max_flux >= s_s, class_letter(max_flux), _NO[2 * b_s + a_s])
+        lab = np.where(yes, "YES", "NO")
+        strat = np.where(max_flux >= s_s, class_letter(max_flux), _NO[2 * (n_before > 0) + (n_after > 0)])
         parts.append(pd.DataFrame({
             "t_X": tx, "HARPNUM": h, "label": lab, "target": yes.astype("int8"), "strat_class": strat,
             "max_flux": max_flux, "n_window": n_window, "n_before": n_before, "n_after": n_after,

@@ -45,13 +45,14 @@ def compare_with_legacy(sqlite_path: str | Path, series: str = "NRT", cls: str =
     old = legacy_table(sqlite_path, series, cls)
     new = label(spans, flares, LabelConfig(threshold=cls, end=end, **STATIC))
     m = old.merge(new, on=["t_X", "HARPNUM"], how="outer", suffixes=("_old", "_new"), indicator=True)
-    both = m[m["_merge"] == "both"]
+    both = m[m["_merge"] == "both"].copy()
+    # the static tables keep NO1..NO4 in `label`: the prediction label is YES vs NO
+    both["label_old"] = both["label_old"].where(both["label_old"] == "YES", "NO")
     diff = both[both["label_old"] != both["label_new"]]
-    # strat_class with S_s = S_p is label_u of the static tables
-    strat_old = both["label_u"].where(both["label_old"] != "YES", both["label_u"])
+    # with S_s = S_p the stratification class is label_u of the static tables
     return {"series": series, "class": cls, "rows_old": len(old), "rows_new": len(new),
             "only_old": int((m["_merge"] == "left_only").sum()), "only_new": int((m["_merge"] == "right_only").sum()),
             "same_label": float((both["label_old"] == both["label_new"]).mean()),
             "label_differences": diff.groupby(["label_old", "label_new"]).size().to_dict(),
-            "same_strat_class": float((strat_old == both["strat_class"]).mean()),
+            "same_strat_class": float((both["label_u"] == both["strat_class"]).mean()),
             "differences": diff[["t_X", "HARPNUM", "label_old", "label_new"]]}

@@ -1,4 +1,4 @@
-"""Parametric labeling: prediction label (YES/NO1..NO4) and stratification class on a small
+"""Parametric labeling: prediction label (YES/NO) and stratification class on a small
 synthetic sample."""
 import pandas as pd
 import pytest
@@ -41,27 +41,32 @@ def test_grid_alignment_and_observed_harps():
     assert out.t_X.min() == day(-10) and out.t_X.max() == day(10)
 
 
-def test_prediction_label_no_classes_unlimited_windows():
+def test_prediction_label_is_binary_and_no_classes_are_stratification():
     fl = flares((1, day(-5), 2e-5),          # M2 five days before day 0
                 (1, day(5), 3e-5))           # M3 five days after day 0
     out = lab(fl)
-    assert out.loc[(day(-7), 1), "label"] == "NO2"          # only after (unlimited future)
+    assert set(out["label"]) == {"YES", "NO"}                # prediction label: YES / NO only
     assert out.loc[(day(-6), 1), "label"] == "YES"          # flare at t_X + 24 h: inside (inclusive)
     assert out.loc[(day(-5), 1), "label"] == "YES"          # flare at t_X: inside the window (inclusive)
-    assert out.loc[(day(0), 1), "label"] == "NO3"           # before and after
     assert out.loc[(day(4), 1), "label"] == "YES"           # M3 at day 5 within [t_X, t_X + 24 h]
-    assert out.loc[(day(6), 1), "label"] == "NO4"           # only before
-    assert out.loc[(day(0), 2), "label"] == "NO1"           # HARP without flares
-    assert out.loc[(day(4), 1), "target"] == 1 and out.loc[(day(0), 1), "target"] == 0
+    assert out.loc[(day(0), 1), "label"] == "NO" and out.loc[(day(0), 1), "target"] == 0
+    assert out.loc[(day(4), 1), "target"] == 1
+    # history of the region (S_s = S_p, unlimited before/after): stratification class only
+    assert out.loc[(day(-7), 1), "strat_class"] == "NO2"    # only after (unlimited future)
+    assert out.loc[(day(0), 1), "strat_class"] == "NO3"     # before and after
+    assert out.loc[(day(6), 1), "strat_class"] == "NO4"     # only before
+    assert out.loc[(day(0), 2), "strat_class"] == "NO1"     # HARP without flares
+    assert out.loc[(day(4), 1), "strat_class"] == "M"       # YES: class of the window maximum
     assert out.loc[(day(0), 1), ["n_before", "n_after", "n_window"]].tolist() == [1, 1, 0]
 
 
 def test_bounded_stratification_window_reproduces_static_definition():
     fl = flares((1, day(-5), 2e-5), (1, day(5), 3e-5))
     out = lab(fl, strat_window_hours=24)
-    assert out.loc[(day(0), 1), "label"] == "NO1"           # both flares outside [t_X - 24 h, t_X + 48 h]
-    assert out.loc[(day(-4), 1), "label"] == "NO4"          # M2 within the 24 h before
-    assert out.loc[(day(3), 1), "label"] == "NO2"           # M3 at day 5 in [t_X + 24 h, t_X + 48 h]
+    assert out.loc[(day(0), 1), "strat_class"] == "NO1"     # both flares outside [t_X - 24 h, t_X + 48 h]
+    assert out.loc[(day(-4), 1), "strat_class"] == "NO4"    # M2 within the 24 h before
+    assert out.loc[(day(3), 1), "strat_class"] == "NO2"     # M3 at day 5 in [t_X + 24 h, t_X + 48 h]
+    assert (out.loc[[(day(0), 1), (day(-4), 1), (day(3), 1)], "label"] == "NO").all()
 
 
 def test_threshold_and_stratification_class():
@@ -69,7 +74,7 @@ def test_threshold_and_stratification_class():
                 (1, day(2, 6), 2e-4))        # X2 two days later
     out = lab(fl, threshold="M", strat_threshold="C")
     r = out.loc[(day(0), 1)]
-    assert r.label == "NO2" and r.target == 0                # M threshold: the C3 does not count
+    assert r.label == "NO" and r.target == 0                 # M threshold: the C3 does not count
     assert r.strat_class == "C" and r.max_class == "C"       # C stratification: class of the window max
     assert out.loc[(day(2), 1), "strat_class"] == "X" and out.loc[(day(2), 1), "label"] == "YES"
     same = lab(fl, threshold="M")                            # S_s = S_p
@@ -85,7 +90,7 @@ def test_flux_exactly_at_threshold_counts():
 
 def test_flare_window_length():
     fl = flares((1, day(1, 12), 5e-5))
-    assert lab(fl).loc[(day(0), 1), "label"] == "NO2"                              # 36 h > 24 h
+    assert lab(fl).loc[(day(0), 1), "label"] == "NO"                               # 36 h > 24 h
     assert lab(fl, flare_window_hours=48).loc[(day(0), 1), "label"] == "YES"
     hourly = label(SPANS, fl, LabelConfig(threshold="M", step_hours=6, start=day(0), end=day(1)))
     assert len(hourly[hourly.HARPNUM == 1]) == 5

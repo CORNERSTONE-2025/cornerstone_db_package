@@ -8,7 +8,7 @@ former ``create_hdf5_from_db``. Rows whose window holds no record are left out a
 Layout (compatible with ``SHARPDataset`` and the GUI)::
 
     X              (N, T, F) float32, NaN = missing
-    Y              (N,) bytes   prediction label YES / NO1..NO4
+    Y              (N,) bytes   prediction label YES / NO
     label_<name>   (N,) bytes   same as Y
     label_u_<name> (N,) bytes   stratification class: C/M/X... or NO1..NO4 (used for the splits)
     HARPNUM        (N,) int32

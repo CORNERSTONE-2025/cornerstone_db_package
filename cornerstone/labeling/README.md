@@ -4,13 +4,17 @@ Replaces the static tables `DF_<type>_<class>_delta<h>_three_classes` and
 `Cornerstone.splitting_labeling`. Definitions in `core.py`; in short, for every issue time `t_X`
 and HARP observed at `t_X`, flare window `[t_X, t_X + W]`:
 
-- **prediction label** (threshold `S_p`): `YES` if a flare ≥ `S_p` peaks in the window, otherwise
-  NO1 (no flare ≥ `S_p` before nor after), NO2 (only after), NO3 (before and after), NO4 (only
-  before) — original naming;
-- **stratification class** (threshold `S_s`, default `S_p`): class letter of the strongest flare of
-  the window when ≥ `S_s`, otherwise NO1–NO4 computed with `S_s`;
+- **prediction label** (threshold `S_p`), the target of the models: `YES` if a flare ≥ `S_p` peaks
+  in the window, otherwise `NO`;
+- **stratification class** (threshold `S_s`, default `S_p`), only used to stratify the splits:
+  class letter of the strongest flare of the window when ≥ `S_s`, otherwise the history of the region
+  with the original naming: NO1 (no flare ≥ `S_s` before nor after), NO2 (only after), NO3 (before
+  and after), NO4 (only before);
 - "before"/"after": the whole past/future of the HARP by default, or `L` hours
   (`strat_window_hours`) before `t_X` and after `t_X + W`.
+
+The former static tables kept NO1–NO4 in the `label` column too; their binary meaning (YES vs NO)
+is the same.
 
 | `LabelConfig` | default | |
 |---|---|---|

@@ -40,7 +40,7 @@ def store(tmp_path):
 
 
 def _labels(harps, days=(1, 2)):
-    rows = [{"t_X": T0 + pd.Timedelta(days=d), "HARPNUM": h, "label": "YES" if d == 2 else "NO2",
+    rows = [{"t_X": T0 + pd.Timedelta(days=d), "HARPNUM": h, "label": "YES" if d == 2 else "NO",
              "strat_class": "M" if d == 2 else "NO2"} for h in harps for d in days]
     return pd.DataFrame(rows)
 
@@ -80,7 +80,7 @@ def test_build_dataset_windows(store, tmp_path):
         # HARP 2 (QUALITY != 0), 3 (CMASK <= 5000), 99 (absent) are out; HARP 4 has no record on day 1
         assert harp.tolist() == [1, 1, 4]
         assert X.shape == (3, 121, 17)
-        assert f["Y"][:].tolist() == [b"NO2", b"YES", b"YES"]
+        assert f["Y"][:].tolist() == [b"NO", b"YES", b"YES"]
         assert f["label_Mplus_delta24"][:].tolist() == f["Y"][:].tolist()
         assert f["label_u_Mplus_delta24"][:].tolist() == [b"NO2", b"M", b"M"]
         ts = f["timestamps"][:]
@@ -115,7 +115,7 @@ def test_sharp_dataset_reads_stratification_class(store, tmp_path):
     build_dataset(store, "DEF", _labels([1, 4]), out, label_meta={"label_config": {"threshold": "M"}},
                   log=lambda *_: None)
     ds = SharpDataset(str(out), label="Mplus_delta24")
-    assert ds._raw_labels.tolist() == ["NO2", "YES", "YES"]
+    assert ds._raw_labels.tolist() == ["NO", "YES", "YES"]
     assert ds._strat_labels.tolist() == ["NO2", "M", "M"]
     assert ds.Y.squeeze(1).tolist() == [0.0, 1.0, 1.0]
     mc = SharpDataset(str(out), label="Mplus_delta24", multi_class=True)
