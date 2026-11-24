@@ -5,8 +5,9 @@ run once, to create the store from a database somebody already has, or to prepar
 snapshot published for everybody.
 
 Only the raw SHARP tables (``SHARPC_all_DEF`` / ``SHARPC_all_NRT``) become store data. The other
-tables of the dump (flare list associated by the former pipeline, static label tables) are kept,
-unchanged, under ``reference/legacy`` to compare the new labeling with the old one.
+tables of the dump (flare list associated by the former pipeline, static label tables) are not
+imported: GOES flares and labels come from the sources and from ``cornerstone.labeling``
+(``cornerstone.labeling.validation`` compares with the static tables reading the database itself).
 """
 from __future__ import annotations
 
@@ -24,7 +25,6 @@ from . import sharp
 from .store import HARP_BLOCK, DataStore, block_name, block_start, say
 
 LEGACY_SHARP_TABLE = "SHARPC_all_{series}"
-LEGACY_REFERENCE_TABLES = ("NOAA_SHARP_AR",)          # plus every DF_*_three_classes(_unified) table
 
 
 def _connect_ro(path: str | Path) -> sqlite3.Connection:
@@ -93,40 +93,12 @@ def import_sharp_from_sqlite(sqlite_path: str | Path, store: DataStore, series: 
         duration_s=round(time.time() - t0, 1))
 
 
-def legacy_reference_tables(con: sqlite3.Connection) -> list[str]:
-    names = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
-    return [t for t in names if t in LEGACY_REFERENCE_TABLES
-            or (t.startswith("DF_") and t.endswith(("_three_classes", "_three_classes_unified")))]
-
-
-def import_legacy_references(sqlite_path: str | Path, store: DataStore,
-                             log: Callable[[str], None] = say) -> dict:
-    """Copy the flare list and the static label tables of the legacy database, values unchanged."""
-    out = store.reference_dir("legacy")
-    files: dict[str, dict] = {}
-    with closing(_connect_ro(sqlite_path)) as con:
-        for t in legacy_reference_tables(con):
-            df = pd.read_sql_query(f'SELECT * FROM "{t}"', con)
-            name = t.removesuffix("_unified") + ".parquet"
-            files[name] = store.write_table(out / name, pa.Table.from_pandas(df, preserve_index=False))
-            log(f"   reference {t}: {len(df):,} rows")
-    return store.record_dataset(
-        "reference/legacy", files,
-        note="Tables of the former MySQL dump, values unchanged (times as text, as in the dump): "
-             "flare list associated to NRT HARPs and static label tables (*_unified). For comparison only.",
-        source={"kind": "legacy-sqlite", "file": Path(sqlite_path).name})
-
-
 def bootstrap_from_sqlite(sqlite_path: str | Path, store: DataStore,
-                          series: Iterable[str] = ("DEF", "NRT"), references: bool = True,
+                          series: Iterable[str] = ("DEF", "NRT"),
                           log: Callable[[str], None] = say) -> dict:
-    """Create the store from a legacy SQLite database: raw SHARP tables and reference tables."""
-    out = {}
-    for s in series:
-        out[f"sharp/{s}"] = import_sharp_from_sqlite(sqlite_path, store, s, log=log)
-    if references:
-        out["reference/legacy"] = import_legacy_references(sqlite_path, store, log=log)
-    return out
+    """Create the store from a legacy SQLite database (raw SHARP tables only)."""
+    store.drop_obsolete(log=log)
+    return {f"sharp/{s}": import_sharp_from_sqlite(sqlite_path, store, s, log=log) for s in series}
 
 
 # ---------------------------------------------------------------------------------------- snapshot
@@ -166,7 +138,8 @@ def _drive_get(file_id: str, dst: Path, retries: int = 5, wait: float = 10.0) ->
 def bootstrap_from_snapshot(store: DataStore, url: str | None = None,
                             log: Callable[[str], None] = say) -> dict:
     """Create the store from the published Parquet snapshot (a public Google Drive folder with the
-    store layout: ``manifest.json``, ``raw/...``, ``reference/...``).
+    store layout: ``manifest.json``, ``raw/...``). Datasets of earlier versions listed by the
+    snapshot (``reference/...``, tables of the former dump) are skipped.
 
     Every file is checked against the sha256 of the snapshot manifest. Files are downloaded into
     ``<root>/.snapshot-partial`` and moved into the store only when all of them are verified; if
@@ -179,7 +152,7 @@ def bootstrap_from_snapshot(store: DataStore, url: str | None = None,
     import gdown
 
     from .config import load_config
-    from .store import MANIFEST, sha256
+    from .store import MANIFEST, OBSOLETE_PREFIXES, sha256
 
     url = url or load_config().get("bootstrap_url")
     if not url:
@@ -200,6 +173,7 @@ def bootstrap_from_snapshot(store: DataStore, url: str | None = None,
 
     _drive_get(files[MANIFEST], tmp / MANIFEST)
     snap = json.loads((tmp / MANIFEST).read_text())
+    snap["datasets"] = {k: v for k, v in snap["datasets"].items() if not k.startswith(OBSOLETE_PREFIXES)}
     expected = {(_dataset_dir(name) / f).as_posix(): info.get("sha256")
                 for name, d in snap["datasets"].items() for f, info in d["files"].items()}
     missing = sorted(set(expected) - set(files))
@@ -230,6 +204,7 @@ def bootstrap_from_snapshot(store: DataStore, url: str | None = None,
         dst = store.root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         (tmp / rel).replace(dst)
+    store.drop_obsolete(log=log)
     store.save_manifest(snap)
     shutil.rmtree(tmp, ignore_errors=True)
     log(f"Snapshot installed in {store.root}")
@@ -240,5 +215,4 @@ def _dataset_dir(name: str) -> Path:
     """Folder of a manifest dataset inside the store."""
     if name.startswith("sharp/"):
         return Path("raw/sharp") / name.split("/", 1)[1]
-    return {"goes/swpc_events": Path("raw/goes"), "harp_noaa": Path("raw/harp_noaa"),
-            "reference/legacy": Path("reference/legacy")}.get(name, Path(name))
+    return {"goes/swpc_events": Path("raw/goes"), "harp_noaa": Path("raw/harp_noaa")}.get(name, Path(name))

@@ -15,7 +15,7 @@ The main package containing all components for data processing, model training, 
 - **`cornerstone.py`** - Main API and orchestration module
 - **`sharp_data.py`** - SHARP data ingestion and preprocessing
 - **`config.py`** - Configuration management
-- **`data/`** - Local Parquet store of the raw data (SHARP DEF/NRT, references); see `cornerstone/data/README.md`
+- **`data/`** - Local Parquet store of the raw data (SHARP DEF/NRT, GOES flares, HARP ↔ NOAA map); see `cornerstone/data/README.md`
 - **`processing/`** - Quality filters, features, GOES calibration and flare -> HARP association; see `cornerstone/processing/README.md`
 - **`labeling/`** - Parametric labeling (prediction label and stratification class); see `cornerstone/labeling/README.md`
 - **`dataset/`** - HDF5 datasets of SHARP time windows from the store and the labels; see `cornerstone/dataset/README.md`

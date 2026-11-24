@@ -5,7 +5,8 @@ Layout under ``root`` (one folder, configurable)::
     manifest.json                      # datasets present, provenance, rows, sizes, checksums
     raw/sharp/DEF/harp_000000-000999.parquet   # SHARP keywords, one file per block of HARPNUMs,
     raw/sharp/NRT/...                          # sorted by (HARPNUM, T_OBS)
-    reference/legacy/<table>.parquet   # tables of the former MySQL dump kept for comparisons
+    raw/goes/swpc_events_<year>.parquet        # GOES flare events (NOAA SWPC)
+    raw/harp_noaa/harp_noaa.parquet            # HARP <-> NOAA active regions
 
 Files are written atomically (temporary file + rename), so an interrupted write never leaves a
 truncated file, and a block can be rewritten on its own (incremental updates).
@@ -30,6 +31,7 @@ HARP_BLOCK = 1000           # HARPNUMs per file: ~300k rows, a few tens of MB
 ROW_GROUP_ROWS = 65_536     # row-group statistics let readers skip HARPs and times not requested
 COMPRESSION = "zstd"
 MANIFEST = "manifest.json"
+OBSOLETE_PREFIXES = ("reference/",)   # datasets of earlier versions, removed by updates and snapshots
 
 
 def say(msg: str) -> None:
@@ -73,8 +75,20 @@ class DataStore:
         d = self.sharp_dir(series)
         return sorted(d.glob("harp_*.parquet")) if d.exists() else []
 
-    def reference_dir(self, name: str = "legacy") -> Path:
-        return self.root / "reference" / name
+    def drop_obsolete(self, log=say) -> list[str]:
+        """Remove datasets of earlier versions (``reference/...``: tables of the former dump)."""
+        import shutil
+
+        m = self.load_manifest()
+        gone = [k for k in m.get("datasets", {}) if k.startswith(OBSOLETE_PREFIXES)]
+        for k in gone:
+            m["datasets"].pop(k)
+            log(f"Removing {k} (tables of the former database, no longer used)")
+        if gone:
+            self.save_manifest(m)
+        for prefix in OBSOLETE_PREFIXES:
+            shutil.rmtree(self.root / prefix.rstrip("/"), ignore_errors=True)
+        return gone
 
     # ------------------------------------------------------------------ writing
     def write_table(self, path: Path, table: pa.Table) -> dict:

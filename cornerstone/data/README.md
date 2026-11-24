@@ -12,8 +12,7 @@ the datasets are built from these files.
 ├── raw/sharp/DEF/harp_000000-000999.parquet   # hmi.sharp_720s keywords, 1000 HARPs per file
 ├── raw/sharp/NRT/...                          # hmi.sharp_720s_nrt
 ├── raw/harp_noaa/harp_noaa.parquet  # JSOC HARP <-> NOAA map, one row per pair
-├── raw/goes/swpc_events_<year>.parquet        # GOES X-ray events (NOAA SWPC edited events)
-└── reference/legacy/*.parquet       # tables of the former dump, unchanged, for comparisons only
+└── raw/goes/swpc_events_<year>.parquet        # GOES X-ray events (NOAA SWPC edited events)
 ```
 
 SHARP files hold the **raw** records (no quality filter: that is a parametric processing step),
@@ -90,8 +89,12 @@ python -m cornerstone.data bootstrap-sqlite db/cornerstone.sqlite   # or: from t
 ## Bootstrap from the former database
 
 `bootstrap-sqlite` converts `SHARPC_all_DEF` / `SHARPC_all_NRT` of a database built by
-`Cornerstone.db_update()` (85 s on a laptop, 1.3 GB of RAM at peak) and copies the flare list and
-the static label tables to `reference/legacy`. Measured on the 2025-11-01 dump:
+`Cornerstone.db_update()` (85 s on a laptop, 1.3 GB of RAM at peak). The other tables of the dump
+(flare list associated by the former pipeline, static label tables) are not imported: flares and
+labels come from the sources and from `cornerstone.labeling`, and `cornerstone.labeling.validation`
+compares with the static tables reading the database itself. Stores of earlier versions kept them
+under `reference/legacy`: `update`, `bootstrap-snapshot` and `bootstrap-sqlite` remove that folder.
+Measured on the 2025-11-01 dump:
 
 | | rows | size |
 |---|---|---|
@@ -99,7 +102,6 @@ the static label tables to `reference/legacy`. Measured on the 2025-11-01 dump:
 | dump `cornerstone.sql.gz` | | 1.46 GB |
 | `raw/sharp/DEF` | 4,622,872 | 299 MB |
 | `raw/sharp/NRT` | 3,997,442 | 253 MB |
-| `reference/legacy` | 246,447 | 6 MB |
 
 Checked row by row against the database: identical keys, times, QUALITY and NOAA fields;
 float32 relative error ≤ 6·10⁻⁸.
@@ -110,12 +112,12 @@ download ~550 MB of Parquet instead of building the database from the dump.
 ## Published snapshot
 
 `bootstrap_url` in `cornerstone/configs/data_config.json` points to the public Drive folder of the
-snapshot of 2026-11-12 (`manifest.json`, `raw/`, `reference/`; ~630 MB, raw data as downloaded from
-the sources, no `.cache`). `bootstrap-snapshot` lists the folder, downloads every file of its
+snapshot of 2026-11-12 (`manifest.json`, `raw/`; ~630 MB, raw data as downloaded from the sources,
+no `.cache`; its `reference/` folder, tables of the former dump, is skipped). `bootstrap-snapshot` lists the folder, downloads every file of its
 manifest into `<root>/.snapshot-partial`, checks the sha256 of each one and moves them into the
 store only when all of them are verified. If Drive interrupts the download (network, quota),
 running the command again resumes it, skipping the files already verified.
 
-To publish a new snapshot: upload `manifest.json`, `raw/` and `reference/` of an up-to-date store
+To publish a new snapshot: upload `manifest.json` and `raw/` of an up-to-date store
 (without `.cache`) to a new Drive folder, share it as "anyone with the link" (reader) and set its
 URL as `bootstrap_url`.

@@ -11,10 +11,10 @@ Independent of the ML stack (no torch/ClearML imports). Main entry points:
 
 Command line: ``python -m cornerstone.data --help``.
 """
-from .bootstrap import bootstrap_from_snapshot, bootstrap_from_sqlite, import_legacy_references, import_sharp_from_sqlite
+from .bootstrap import bootstrap_from_snapshot, bootstrap_from_sqlite, import_sharp_from_sqlite
 from .config import default_store, load_config
 from .store import DataStore
 from .update import SOURCES, update_all
 
-__all__ = ["DataStore", "bootstrap_from_snapshot", "bootstrap_from_sqlite", "import_sharp_from_sqlite", "import_legacy_references",
+__all__ = ["DataStore", "bootstrap_from_snapshot", "bootstrap_from_sqlite", "import_sharp_from_sqlite",
            "default_store", "load_config", "update_all", "SOURCES"]

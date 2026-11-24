@@ -3,7 +3,7 @@
     python -m cornerstone.data status [--root DIR]
     python -m cornerstone.data update [--root DIR] [--sources harp_noaa goes sharp_DEF sharp_NRT] [--full]
     python -m cornerstone.data bootstrap-snapshot [--root DIR] [--url URL]
-    python -m cornerstone.data bootstrap-sqlite DB.sqlite [--root DIR] [--series DEF NRT] [--no-references]
+    python -m cornerstone.data bootstrap-sqlite DB.sqlite [--root DIR] [--series DEF NRT]
 """
 from __future__ import annotations
 
@@ -31,7 +31,6 @@ def main(argv=None) -> int:
     b = sub.add_parser("bootstrap-sqlite", help="create the store from a legacy SQLite database")
     b.add_argument("sqlite")
     b.add_argument("--series", nargs="+", default=["DEF", "NRT"], choices=["DEF", "NRT"])
-    b.add_argument("--no-references", action="store_true", help="do not copy the legacy reference tables")
     a = ap.parse_args(argv)
     store = DataStore(a.root or load_config()["data_root"])
     if a.cmd == "update":
@@ -39,7 +38,7 @@ def main(argv=None) -> int:
     if a.cmd == "bootstrap-snapshot":
         bootstrap_from_snapshot(store, url=a.url)
     if a.cmd == "bootstrap-sqlite":
-        bootstrap_from_sqlite(a.sqlite, store, series=a.series, references=not a.no_references)
+        bootstrap_from_sqlite(a.sqlite, store, series=a.series)
     m = store.load_manifest()
     print(f"Store: {store.root}")
     with pd.option_context("display.width", 160):

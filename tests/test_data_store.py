@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytest
 
 from cornerstone.data import DataStore, bootstrap_from_sqlite, sharp
@@ -72,6 +73,9 @@ def test_bootstrap_from_legacy_sqlite(tmp_path):
         "DF_NRT_Mplus_delta24_three_classes_unified", con, index=False)
     con.close()
     store = DataStore(tmp_path / "store")
+    # a store of an earlier version, with the tables of the former dump: they are removed
+    store.record_dataset("reference/legacy", {"NOAA_SHARP_AR.parquet": store.write_table(
+        store.root / "reference/legacy/NOAA_SHARP_AR.parquet", pa.table({"x": [1]}))})
     out = bootstrap_from_sqlite(db, store, log=lambda m: None)
     assert out["sharp/DEF"]["rows"] == 12
     assert sorted(out["sharp/DEF"]["files"]) == ["harp_000000-000999.parquet", "harp_001000-001999.parquet",
@@ -79,14 +83,14 @@ def test_bootstrap_from_legacy_sqlite(tmp_path):
     back = store.read_sharp("NRT")
     pd.testing.assert_frame_equal(back, sharp.normalize(raw), check_dtype=False)
     m = store.load_manifest()["datasets"]
-    assert set(m) == {"sharp/DEF", "sharp/NRT", "reference/legacy"}
-    assert set(m["reference/legacy"]["files"]) == {"NOAA_SHARP_AR.parquet", "DF_NRT_Mplus_delta24_three_classes.parquet"}
+    assert set(m) == {"sharp/DEF", "sharp/NRT"}                       # only raw data: no reference tables
+    assert not (store.root / "reference").exists()
     # a second import replaces the blocks and removes those without data any more
     con = sqlite3.connect(db)
     con.execute("DELETE FROM SHARPC_all_DEF WHERE HARPNUM = 2500")
     con.commit()
     con.close()
-    out = bootstrap_from_sqlite(db, store, series=["DEF"], references=False, log=lambda m: None)
+    out = bootstrap_from_sqlite(db, store, series=["DEF"], log=lambda m: None)
     assert out["sharp/DEF"]["rows"] == 9 and len(store.sharp_files("DEF")) == 2
 
 
@@ -100,6 +104,8 @@ def test_bootstrap_from_snapshot(tmp_path, monkeypatch):
     src = DataStore(tmp_path / "published")
     src.record_dataset("sharp/DEF", {"harp_000000-000999.parquet":
                                      src.write_sharp_block("DEF", 0, sharp.normalize(_raw(harps=(1, 2))))})
+    src.record_dataset("reference/legacy", {"T.parquet": src.write_table(src.root / "reference/legacy/T.parquet",
+                                                                         pa.table({"x": [1]}))})
 
     def fake_listing(url, output, quiet, skip_download, **kw):         # file id = path in the folder
         assert skip_download
@@ -116,8 +122,8 @@ def test_bootstrap_from_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(bs, "_drive_get", fake_get)
     store = DataStore(tmp_path / "local")
     bs.bootstrap_from_snapshot(store, url="https://drive.example/folder", log=lambda m: None)
-    assert len(store.read_sharp("DEF")) == 6 and "sharp/DEF" in store.load_manifest()["datasets"]
-    assert not list(store.root.glob(".snapshot-*"))
+    assert len(store.read_sharp("DEF")) == 6 and set(store.load_manifest()["datasets"]) == {"sharp/DEF"}
+    assert not list(store.root.glob(".snapshot-*")) and not (store.root / "reference").exists()
     # a corrupted file is refused; the partial download is kept and a new call resumes from it
     good = (src.sharp_dir("DEF") / "harp_000000-000999.parquet").read_bytes()
     (src.sharp_dir("DEF") / "harp_000000-000999.parquet").write_bytes(b"corrupted")

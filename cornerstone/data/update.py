@@ -19,6 +19,7 @@ def update_all(store: DataStore, sources: Iterable[str] = SOURCES, full: bool = 
     raises at the end if any source failed.
     """
     t0 = time.time()
+    store.drop_obsolete(log=log)
     results, errors = {}, {}
     for src in sources:
         if src not in SOURCES:
