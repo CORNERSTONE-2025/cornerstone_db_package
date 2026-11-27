@@ -157,6 +157,37 @@ def _get(url: str, timeout: float = 300, retries: int = 4) -> bytes:
     raise AssertionError("unreachable")
 
 
+DAILY_FILE = re.compile(r"\d{8}events\.txt")
+FTP_CONNECT_TIMEOUT = 30              # s: a blocked FTP port fails fast and the fallback takes over
+
+
+def _daily_reports_ftp(year: int, done: set[str]) -> Iterable[str]:
+    """Daily reports of ``year`` over one direct FTP connection; adds each name to ``done``."""
+    host, path = WAREHOUSE.removeprefix("ftp://").split("/", 1)
+    with ftplib.FTP() as ftp:
+        ftp.connect(host, timeout=FTP_CONNECT_TIMEOUT)
+        ftp.sock.settimeout(300)
+        ftp.timeout = 300                 # data connections
+        ftp.login()
+        ftp.cwd(f"/{path}/{year}/{year}_events")
+        for n in sorted(x for x in ftp.nlst() if DAILY_FILE.fullmatch(x)):
+            buf = io.BytesIO()
+            ftp.retrbinary(f"RETR {n}", buf.write)
+            done.add(n)
+            yield buf.getvalue().decode(errors="replace")
+
+
+def _daily_reports_url(year: int, done: set[str]) -> Iterable[str]:
+    """Daily reports of ``year`` not in ``done``, one request each with urllib, which honours
+    ``ftp_proxy`` (the listing is plain text without a proxy, an HTML page through one)."""
+    url = f"{WAREHOUSE}/{year}/{year}_events"
+    names = sorted(set(DAILY_FILE.findall(_get(f"{url}/").decode(errors="replace"))))
+    for n in names:
+        if n not in done:
+            done.add(n)
+            yield _get(f"{url}/{n}").decode(errors="replace")
+
+
 def _year_reports(year: int) -> Iterable[str]:
     """Texts of the daily reports of ``year`` (archive for past years, daily files otherwise)."""
     base = f"{WAREHOUSE}/{year}"
@@ -167,15 +198,15 @@ def _year_reports(year: int) -> Iterable[str]:
                 if m.isfile() and m.name.endswith("events.txt"):
                     yield tar.extractfile(m).read().decode(errors="replace")
     elif f"{year}_events" in listing:
-        # current year: daily files, fetched over a single FTP connection
-        host, path = WAREHOUSE.removeprefix("ftp://").split("/", 1)
-        with ftplib.FTP(host, timeout=300) as ftp:
-            ftp.login()
-            ftp.cwd(f"/{path}/{year}/{year}_events")
-            for n in sorted(x for x in ftp.nlst() if re.fullmatch(r"\d{8}events\.txt", x)):
-                buf = io.BytesIO()
-                ftp.retrbinary(f"RETR {n}", buf.write)
-                yield buf.getvalue().decode(errors="replace")
+        # current year: daily files, fetched over a single FTP connection; where direct FTP is
+        # blocked (networks with a proxy) the files still missing are fetched one by one with urllib
+        done: set[str] = set()
+        try:
+            yield from _daily_reports_ftp(year, done)
+        except (OSError, EOFError, ftplib.Error) as e:
+            say(f"GOES {year}: direct FTP failed ({type(e).__name__}: {e}); "
+                f"fetching the {'remaining ' if done else ''}daily files through urllib (proxy if set)")
+            yield from _daily_reports_url(year, done)
     else:
         raise FileNotFoundError(f"No event reports for {year} in {base}")
 

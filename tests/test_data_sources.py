@@ -125,3 +125,72 @@ def test_download_sharp_resumes_from_cache(tmp_path, monkeypatch):
     assert df.groupby("HARPNUM").size().eq(2).all() and df["USFLUX"].dtype == np.float32
     assert entry["files"][block_name(1000)]["source"] == "jsoc"
     assert not list((tmp_path / ".cache").glob("**/*.parquet"))      # cache emptied
+
+
+# ------------------------------------------------------------------ GOES daily files: FTP, fallback
+class _FakeFTP:
+    files = {f"2026112{d}events.txt": f"report {d}".encode() for d in range(1, 4)}
+    fail_connect = False
+    fail_after = None                     # number of files sent before the connection drops
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def connect(self, host, timeout=None):
+        if self.fail_connect:
+            raise TimeoutError("[Errno 110] Connection timed out")
+        self.sock, self.sent = type("S", (), {"settimeout": lambda s, t: None})(), 0
+
+    def login(self):
+        pass
+
+    def cwd(self, path):
+        pass
+
+    def nlst(self):
+        return sorted(self.files) + ["README"]
+
+    def retrbinary(self, cmd, cb):
+        if self.fail_after is not None and self.sent >= self.fail_after:
+            raise EOFError
+        self.sent += 1
+        cb(self.files[cmd.split()[1]])
+
+
+def _goes_daily(monkeypatch, **ftp_kw):
+    ftp_cls = type("F", (_FakeFTP,), ftp_kw)
+    monkeypatch.setattr(goes.ftplib, "FTP", ftp_cls)
+    requested = []
+
+    def fake_get(url, timeout=300, retries=4):
+        requested.append(url)
+        if url.endswith("/2026/"):
+            return b"2026_events/"
+        if url.endswith("_events/"):      # listing as an HTML page, as a proxy returns it
+            return "".join(f'<a href="{n}">{n}</a>' for n in _FakeFTP.files).encode()
+        return _FakeFTP.files[url.rsplit("/", 1)[1]]
+
+    monkeypatch.setattr(goes, "_get", fake_get)
+    monkeypatch.setattr(goes, "say", lambda m: None)
+    return list(goes._year_reports(2026)), requested
+
+
+def test_goes_daily_files_direct_ftp(monkeypatch):
+    texts, requested = _goes_daily(monkeypatch)
+    assert texts == ["report 1", "report 2", "report 3"]
+    assert requested == [f"{goes.WAREHOUSE}/2026/"]                     # only the year listing
+
+
+def test_goes_daily_files_fallback_when_ftp_blocked(monkeypatch):
+    texts, requested = _goes_daily(monkeypatch, fail_connect=True)
+    assert texts == ["report 1", "report 2", "report 3"]
+    assert len(requested) == 2 + 3                                      # 2 listings, 3 files
+
+
+def test_goes_daily_files_fallback_resumes_after_ftp_drop(monkeypatch):
+    texts, requested = _goes_daily(monkeypatch, fail_after=1)
+    assert texts == ["report 1", "report 2", "report 3"]               # no duplicate, none lost
+    assert [u.rsplit("/", 1)[1] for u in requested[2:]] == ["20261122events.txt", "20261123events.txt"]
